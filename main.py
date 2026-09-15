@@ -18,10 +18,12 @@ from pathlib import Path
 
 # Auto-activate .venv if running with system python
 PROJECT_ROOT = Path(__file__).resolve().parent
-venv_python = PROJECT_ROOT / ".venv" / "bin" / "python"
+_venv_bin = "Scripts" if os.name == "nt" else "bin"
+_venv_exe = "python.exe" if os.name == "nt" else "python"
+venv_python = PROJECT_ROOT / ".venv" / _venv_bin / _venv_exe
 if venv_python.exists() and (sys.prefix == sys.base_prefix):
     os.environ["VIRTUAL_ENV"] = str(PROJECT_ROOT / ".venv")
-    os.environ["PATH"] = str(PROJECT_ROOT / ".venv" / "bin") + os.pathsep + os.environ.get("PATH", "")
+    os.environ["PATH"] = str(PROJECT_ROOT / ".venv" / _venv_bin) + os.pathsep + os.environ.get("PATH", "")
     os.execv(str(venv_python), [str(venv_python)] + sys.argv)
 
 import time
@@ -74,7 +76,7 @@ def print_banner(host: str, port: int, status: dict):
     app_url = f"http://{display_host}:{port}"
     docs_url = f"http://{display_host}:{port}/docs"
     
-    cube_str = "✓ Ready" if status["cube_present"] else "⚠ Missing (run `python src/data/synthetic.py --quick`)"
+    cube_str = "✓ Ready" if status["cube_present"] else "⚠ Missing (re-run as `python main.py --quick-synth`)"
     berg_str = "✓ Ready" if status["berg_present"] else "⚠ Fallback mode"
     model_str = "✓ Trained weights found" if status["model_present"] else "ℹ Baseline / synthetic mode"
     
@@ -84,6 +86,9 @@ def print_banner(host: str, port: int, status: dict):
     print(f"  ► Web Application:   {app_url}")
     print(f"  ► API Documentation: {docs_url}")
     print("  ─────────────────────────────────────────────────────────────")
+    print("  Starting… loading model + data cube (~20 s). The browser opens")
+    print("  by itself once the server is actually answering.")
+    print("  ─────────────────────────────────────────────────────────────")
     print(f"  • Data Cube:        {cube_str}")
     print(f"  • Iceberg Tracks:   {berg_str}")
     print(f"  • Forecast Model:   {model_str}")
@@ -92,8 +97,15 @@ def print_banner(host: str, port: int, status: dict):
     print("=" * 66 + "\n")
 
 
-def open_browser_when_ready(url: str, check_url: str, timeout: float = 15.0):
-    """Poll the server until it actually responds with 200 OK, then launch browser."""
+def open_browser_when_ready(url: str, check_url: str, timeout: float = 180.0):
+    """
+    Poll the server until it actually answers, then launch the browser.
+
+    Cold start is dominated by imports (torch ~8 s, xarray/uvicorn ~5 s) plus
+    opening the Zarr cube, so a real-data start takes ~20 s and considerably
+    longer on a slower machine. The browser is NEVER opened speculatively: an
+    early open lands on a connection-refused page that looks like a crash.
+    """
     def _target():
         start_time = time.time()
         while time.time() - start_time < timeout:
@@ -106,11 +118,9 @@ def open_browser_when_ready(url: str, check_url: str, timeout: float = 15.0):
                         return
             except Exception:
                 time.sleep(0.3)
-        # Fallback: attempt to open anyway if timeout elapsed
-        try:
-            webbrowser.open(url)
-        except Exception:
-            pass
+        print(f"\n[CryoNav] Server did not answer within {timeout:.0f}s; "
+              f"not opening a browser.\n           Once the log shows "
+              f"'Application startup complete', open {url} yourself.")
 
     thread = threading.Thread(target=_target, daemon=True)
     thread.start()
@@ -162,7 +172,9 @@ def main():
     if not status["cube_present"] and args.quick_synth:
         print("Data cube missing. Generating quick synthetic test cube...")
         from src.data.synthetic import build_synthetic_cube
-        build_synthetic_cube(n_days=120)
+        # Same range as `python src/data/synthetic.py --quick`: ~120 days covering
+        # the demo date the web UI opens on.
+        build_synthetic_cube(start_date="2022-12-01", end_date="2023-03-31")
         status = check_preflight_status()
 
     bind_host = "0.0.0.0" if args.public else args.host

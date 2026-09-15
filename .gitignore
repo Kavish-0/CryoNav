@@ -6,13 +6,32 @@ __pycache__/
 venv/
 .ipynb_checkpoints/
 
-# Data (large/generated — not tracked)
+# Data
 data/raw/
 data/interim/
-data/processed/
 
-# Results (generated outputs)
-results/
+# The 14 GB real Zarr cube is distributed via scripts/download_data.py, never
+# in git. The small REAL artifacts below are tracked deliberately so that a
+# fresh clone shows real observations rather than generated stand-ins.
+data/processed/*
+!data/processed/bergs/
+data/processed/bergs/*
+!data/processed/bergs/tracked_icebergs_2017_2024.csv
+!data/processed/demo_cache/
+data/processed/demo_cache/*
+!data/processed/demo_cache/*.npy
+
+# Results — generated outputs are ignored, but the real trained model and the
+# real validation record are tracked so /metrics and /forecast serve real data.
+results/*
+!results/backtest_results.json
+!results/backtest_summary.csv
+!results/baselines.csv
+!results/skill_curves.png
+!results/checkpoints/
+results/checkpoints/*
+!results/checkpoints/best_model.pt
+!results/checkpoints/training_history.json
 
 # OS / editor
 .DS_Store

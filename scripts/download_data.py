@@ -227,7 +227,10 @@ def verify_local_data():
             ds = xr.open_zarr(str(ZARR_PATH))
             print(f"   ✓ Valid Zarr Cube: dims={dict(ds.sizes)}, vars={len(ds.data_vars)}")
             print(f"   ✓ Time coverage: {str(ds.time.values[0])[:10]} to {str(ds.time.values[-1])[:10]} ({len(ds.time)} days)")
-            print(f"   ✓ Real SIC: {float(ds.sic_is_real.mean())*100:.1f}% | Real ERA5: {float(ds.atmo_is_real.mean())*100:.1f}% | Real CMEMS: {float(ds.ocean_is_real.mean())*100:.1f}%")
+            if all(v in ds for v in ("sic_is_real", "atmo_is_real", "ocean_is_real")):
+                print(f"   ✓ Real SIC: {float(ds.sic_is_real.mean())*100:.1f}% | Real ERA5: {float(ds.atmo_is_real.mean())*100:.1f}% | Real CMEMS: {float(ds.ocean_is_real.mean())*100:.1f}%")
+            else:
+                print("   ℹ Synthetic cube (no real-data provenance flags).")
             ds.close()
         except Exception as e:
             print(f"   ✗ Zarr cube found but error reading: {e}")
@@ -235,25 +238,44 @@ def verify_local_data():
         print("   ✗ Not found. Run `python scripts/download_data.py --all` or `python src/data/build_cube.py`.")
 
     # 2. Icebergs Parquet
-    berg_parquet = PROCESSED_DIR / "bergs/tracked_icebergs_2017_2024.parquet"
-    print(f"\n2. Tracked Icebergs Database: {berg_parquet}")
-    if berg_parquet.exists():
+    berg_dir = PROCESSED_DIR / "bergs"
+    berg_parquet = berg_dir / "tracked_icebergs_2017_2024.parquet"
+    # The API reads the CSV (src/api/main.py), so accept either form here.
+    berg_csv = berg_dir / "tracked_icebergs_2017_2024.csv"
+    berg_file = berg_parquet if berg_parquet.exists() else berg_csv
+    print(f"\n2. Tracked Icebergs Database: {berg_file}")
+    if berg_file.exists():
         try:
             import pandas as pd
-            df = pd.read_parquet(berg_parquet)
+            df = (pd.read_parquet(berg_file) if berg_file.suffix == ".parquet"
+                  else pd.read_csv(berg_file))
             print(f"   ✓ Valid Berg Trajectories: {df['berg_id'].nunique()} bergs, {len(df):,} observations")
         except Exception as e:
-            print(f"   ✗ Error reading parquet: {e}")
+            print(f"   ✗ Error reading {berg_file.suffix.lstrip('.')}: {e}")
     else:
-        print("   ✗ Not found. Run `python src/berg/parse_byu.py`.")
+        print("   ℹ Not found — /bergs falls back to synthetic positions. "
+              "Run `python src/berg/parse_byu.py` for real tracks.")
 
-    # 3. Model Weights
-    weights_path = MODELS_DIR / "unet_v1_weights.pt"
+    # 3. Model Weights — best_model.pt ships with the repo and is what
+    # src/ice/predict.py loads; unet_v1_weights.pt is an optional export.
+    checkpoint = PROJECT_ROOT / "results" / "checkpoints" / "best_model.pt"
+    weights_path = checkpoint if checkpoint.exists() else MODELS_DIR / "unet_v1_weights.pt"
     print(f"\n3. Forecast Model Checkpoint: {weights_path}")
     if weights_path.exists():
         print(f"   ✓ Model checkpoint available ({weights_path.stat().st_size / 1e6:.1f} MB)")
     else:
         print("   ⏳ Not trained yet. Run `python src/ice/train.py`.")
+
+    # 4. Cached real forecasts — these make /forecast return source="model"
+    cache_dir = PROCESSED_DIR / "demo_cache"
+    cached = sorted(cache_dir.glob("forecast_*.npy")) if cache_dir.exists() else []
+    print(f"\n4. Cached Model Forecasts: {cache_dir}")
+    if cached:
+        dates = ", ".join(f.stem.replace("forecast_", "") for f in cached)
+        print(f"   ✓ {len(cached)} cached init dates: {dates}")
+    else:
+        print("   ⏳ None cached. /forecast will return observed_fallback. "
+              "Generate with `python src/ice/predict.py`.")
 
 
 if __name__ == "__main__":

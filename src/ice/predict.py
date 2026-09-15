@@ -69,12 +69,24 @@ def cache_path(init_date: str, zarr_path: str = None) -> Path:
     return cache_dir(zarr_path) / f"forecast_{init_date}.npy"
 
 
-def load_cached_forecast(init_date: str, zarr_path: str = None):
-    """Return the cached (H, ny, nx) forecast for `init_date`, or None."""
+def load_cached_forecast(init_date: str, zarr_path: str = None, grid_shape=None):
+    """
+    Return the cached (H, ny, nx) forecast for `init_date`, or None.
+
+    `grid_shape` is the (ny, nx) of the cube the caller intends to use it with.
+    A cache written against a different grid — the real 264x220 cube's forecasts
+    loaded next to a synthetic 269x269 cube, say — is silently wrong rather than
+    merely stale, so it is rejected here and the caller falls back to observed.
+    """
     path = cache_path(init_date, zarr_path)
     if not path.exists():
         return None
-    return np.load(path)
+    arr = np.load(path)
+    if grid_shape is not None and tuple(arr.shape[1:]) != tuple(grid_shape):
+        print(f"Ignoring cached forecast {path.name}: grid {arr.shape[1:]} "
+              f"does not match the loaded cube {tuple(grid_shape)}.")
+        return None
+    return arr
 
 
 def lead_index(init_date: str, valid_date: str) -> int:

@@ -22,11 +22,14 @@ const ROUTE_COLORS = {
 // ─── Fixture Fallback & API Interceptor ───
 // Automatically falls back to static fixtures in web/fixtures/ if backend is unavailable
 let USE_FIXTURES = false;
+let SERVED_FROM_FIXTURE = false;   // set once any response came from web/fixtures/
 const _nativeFetch = window.fetch;
 window.fetch = async (url, opts) => {
     const urlStr = String(url);
     if (USE_FIXTURES) {
         const endpoint = urlStr.split('?')[0].replace(/^\//, '').replace(/^static\//, '') || 'config';
+        SERVED_FROM_FIXTURE = true;
+        renderProvenanceBanner();
         return _nativeFetch(`fixtures/${endpoint}.json`);
     }
     try {
@@ -36,15 +39,76 @@ window.fetch = async (url, opts) => {
         if (urlStr.startsWith('/') || !urlStr.startsWith('http')) {
             const endpoint = urlStr.split('?')[0].replace(/^\//, '').replace(/^static\//, '') || 'config';
             const fixtureRes = await _nativeFetch(`fixtures/${endpoint}.json`);
-            if (fixtureRes.ok) return fixtureRes;
+            if (fixtureRes.ok) {
+                SERVED_FROM_FIXTURE = true;
+                renderProvenanceBanner();
+                return fixtureRes;
+            }
         }
         return res;
     } catch (err) {
         console.warn('Backend unavailable, falling back to static fixture for', urlStr);
         const endpoint = urlStr.split('?')[0].replace(/^\//, '').replace(/^static\//, '') || 'config';
+        SERVED_FROM_FIXTURE = true;
+        renderProvenanceBanner();
         return _nativeFetch(`fixtures/${endpoint}.json`);
     }
 };
+
+// ─── Data Provenance Banner ───
+// CryoNav shows real observations by default. Anything else — a synthetic cube,
+// or frozen fixtures served because the backend is unreachable — is announced
+// here and badged at every field, so nothing generated is read as observed.
+let DATA_PROVENANCE = null;
+
+function provenanceState() {
+    if (SERVED_FROM_FIXTURE) {
+        return {
+            real: false,
+            label: 'FROZEN FIXTURES — NOT LIVE DATA',
+            detail: 'The backend is unreachable, so responses come from web/fixtures/. ' +
+                    'These are real recorded responses from 2023-01-13, not live output.',
+        };
+    }
+    if (DATA_PROVENANCE && DATA_PROVENANCE.is_real === false) {
+        return {
+            real: false,
+            label: 'SYNTHETIC DATA — NOT REAL OBSERVATIONS',
+            detail: (DATA_PROVENANCE.reason || 'Generated fields.') +
+                    ' Download the real cube: python scripts/download_data.py --gdrive-id <ID>',
+        };
+    }
+    return { real: true };
+}
+
+function renderProvenanceBanner() {
+    if (!document.body) return;   // a fetch may resolve before the DOM exists
+    const state = provenanceState();
+    let el = document.getElementById('provenance-banner');
+
+    if (state.real) {
+        if (el) el.remove();
+        document.body.classList.remove('has-provenance-banner');
+        return;
+    }
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'provenance-banner';
+        document.body.appendChild(el);
+        document.body.classList.add('has-provenance-banner');
+    }
+    el.innerHTML =
+        `<span class="pb-tag">\u26a0 ${state.label}</span>` +
+        `<span class="pb-detail">${state.detail}</span>`;
+}
+
+// Badge markup for a per-field source value, appended next to field readouts.
+function sourceBadge(source) {
+    const real = source === 'model' || source === 'observed';
+    const text = SERVED_FROM_FIXTURE ? 'FIXTURE' : String(source || 'unknown').toUpperCase();
+    const cls = (real && !SERVED_FROM_FIXTURE) ? 'src-badge src-real' : 'src-badge src-fake';
+    return `<span class="${cls}">${text}</span>`;
+}
 
 // ─── State ───
 let map;
@@ -71,12 +135,26 @@ let routePolylines = {};
 
 // ─── Initialisation ───
 document.addEventListener('DOMContentLoaded', async () => {
+    await loadProvenance();
     initMap();
     addStationMarkers();
     await loadGrid();
     loadBergs();
     loadMetrics();
 });
+
+// Establish data provenance before drawing anything, so a synthetic or
+// fixture-backed session is labelled from the first frame.
+async function loadProvenance() {
+    try {
+        const res = await fetch(`${API}/config`);
+        const cfg = await res.json();
+        DATA_PROVENANCE = cfg.data_provenance || null;
+    } catch (err) {
+        DATA_PROVENANCE = null;
+    }
+    renderProvenanceBanner();
+}
 
 // Load validation headline metrics from /metrics
 async function loadMetrics() {
@@ -483,9 +561,10 @@ async function loadForecast() {
 
         const validDate = currentForecast.stats?.valid_date;
         document.getElementById('chip-forecast-info').style.display = 'flex';
-        document.getElementById('forecast-date-display').textContent =
+        document.getElementById('forecast-date-display').innerHTML =
             `${date} + ${lead}d = ${validDate || ''}` +
-            (currentForecast.source === 'model' ? '' : ' (NOT A FORECAST)');
+            (currentForecast.source === 'model' ? '' : ' (NOT A FORECAST)') +
+            sourceBadge(currentForecast.source);
         if (currentForecast.warning) console.warn(currentForecast.warning);
 
         const observedRes = await fetch(`${API}/observed?date=${validDate}`);
@@ -906,9 +985,10 @@ async function loadForecastForLead(date, lead) {
             currentForecast = await res.json();
             renderSICLayer(currentForecast, sicColor, 'forecast');
             
-            document.getElementById('forecast-date-display').textContent =
+            document.getElementById('forecast-date-display').innerHTML =
                 `${date} + ${lead}d = ${currentForecast.stats?.valid_date || ''}` +
-                (currentForecast.source === 'model' ? '' : ' (NOT A FORECAST)');
+                (currentForecast.source === 'model' ? '' : ' (NOT A FORECAST)') +
+                sourceBadge(currentForecast.source);
         }
     } catch (err) {
         console.warn('Error updating lead day:', err);

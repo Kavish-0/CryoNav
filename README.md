@@ -35,7 +35,52 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Dataset Setup (1-Command Download)
+> **Requires Python 3.11–3.14.** `pip install -r requirements.txt` needs no compiler
+> and no system libraries — every dependency ships prebuilt wheels.
+
+### 2. Data provenance — real by default
+
+**CryoNav shows real observations. Anything else is labelled, never substituted silently.**
+
+These real artifacts ship in the repo (~51 MB), so a plain clone already serves real data:
+
+| Artifact | What it makes real |
+|---|---|
+| `results/checkpoints/best_model.pt` | the trained U-Net (38 MB) |
+| `data/processed/demo_cache/*.npy` | cached real forecasts → `/forecast` returns `source: "model"` |
+| `data/processed/bergs/*.csv` | 63,955 real BYU iceberg observations, 49 bergs |
+| `results/backtest_*`, `baselines.csv`, `skill_curves.png` | the real 2024 rolling-origin validation behind `/metrics` |
+
+Only the **SIC / atmosphere / ocean fields** need the 5.4 GB cube (step 3) — it is far too
+large for git.
+
+Every response carries its provenance, and the UI badges it:
+
+- `/config` → `data_provenance.is_real`, derived from the cube's own `sic_is_real`,
+  `atmo_is_real`, `ocean_is_real` flags
+- `/forecast` → `source: "model"` (real U-Net) or `"observed_fallback"` (truth, **not** a
+  prediction)
+- `/observed` → `source: "observed"` or `"synthetic"`
+- `/bergs` → `source: "observed"` | `"synthetic"` | `"unavailable"`
+- `/data/provenance` → **409** rather than render SHA-256 "verified" rows over generated fields
+
+When data is not real, a red banner is pinned across the top of the UI and every field
+readout carries a `SYNTHETIC` / `FIXTURE` badge.
+
+#### Optional: synthetic mode for offline testing
+
+```bash
+python main.py --quick-synth
+```
+Generates a ~315 MB synthetic cube (~60 s) so the app runs with no download. It is
+**explicitly opt-in** — plain `python main.py` never generates or displays synthetic
+fields. Synthetic fields are *generated*, not observed, and the UI says so continuously.
+
+Note the synthetic cube is built on the canonical 269×269 grid while the real cube is
+264×220, so real cached forecasts are rejected against it (with a printed reason) and
+`/forecast` falls back to observed.
+
+### 3. Full Dataset Setup (1-Command Download)
 The pre-compiled, 8-year analysis-ready Zarr data cube (`2017–2024`, 2,922 days across NASA SIC, ERA5, CMEMS, and BYU Icebergs) is hosted on Google Drive (**5.4 GB compressed**) for 1-command setup:
 
 ```bash
@@ -86,7 +131,7 @@ PYTHONPATH=. python scripts/run_tests.py
    - Or download the file manually by opening [the Drive link](https://drive.google.com/file/d/1EE-ggmzrbKDD69qupAt0ck8DhfhHytu8/view) in a browser, clicking through the virus-scan warning, saving `antarctic_cube_2017_2024.tar.gz` into `data/processed/`, then extracting it there (`tar -xzf antarctic_cube_2017_2024.tar.gz -C data/processed/`) so you end up with `data/processed/antarctic_cube.zarr`.
 5. **Don't commit the dataset to git.** It's intentionally excluded from the repo (GitHub rejects files over 100 MB) — it's distributed via this Drive link only.
 
-### 3. Run Pipeline & Web Interface
+### 4. Run Pipeline & Web Interface
 ```bash
 # Run 4 Baselines (Persistence, Climatology, Linear Trend, Anomaly Persistence)
 PYTHONPATH=. python src/ice/baselines.py
@@ -176,9 +221,9 @@ CryoNav/
 ├── src/
 │   ├── data/       synthetic.py  regrid.py  build_cube.py
 │   ├── ice/        baselines.py  dataset.py  models.py  train.py  predict.py  metrics.py
-│   ├── berg/       dynamics.py  risk_field.py  ensemble.py  validate.py
-│   ├── routing/    cost.py  astar.py  alternatives.py  compare.py
-│   └── api/        main.py  cache.py
+│   ├── berg/       dynamics.py  risk_field.py  parse_byu.py
+│   ├── routing/    cost.py  astar.py  alternatives.py
+│   └── api/        main.py
 ├── web/            index.html  app.js  styles.css
 ├── scripts/        run_demo.py  reproduce_all.sh
 ├── results/        figures + CSV metrics + demo JSON

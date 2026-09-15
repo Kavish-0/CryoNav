@@ -46,15 +46,50 @@ BERGS = None          # observed berg tracks, or None if the file is absent
 CACHE = {}            # memoised berg propagations, keyed by (date, horizon, limit)
 GRID_CACHE = None
 
+# Provenance of the loaded cube. The real cube carries per-day *_is_real flags
+# written by build_cube.py; the synthetic generator does not write them at all.
+# Everything user-facing keys off this, so nothing fabricated is ever presented
+# as an observation.
+PROVENANCE_FLAGS = ("sic_is_real", "atmo_is_real", "ocean_is_real")
+DATA_PROVENANCE = {"is_real": False, "reason": "No data cube loaded."}
+
+
+def _assess_provenance(ds):
+    """Classify a cube as real observations or synthetic, from its own flags."""
+    if ds is None:
+        return {"is_real": False, "kind": "none", "reason": "No data cube loaded."}
+    missing = [f for f in PROVENANCE_FLAGS if f not in ds]
+    if missing:
+        return {
+            "is_real": False,
+            "kind": "synthetic",
+            "reason": ("Synthetic cube: generated fields, not observations. "
+                       "Missing provenance flags: " + ", ".join(missing)),
+        }
+    fractions = {f: round(float(ds[f].mean()), 4) for f in PROVENANCE_FLAGS}
+    return {
+        "is_real": all(v > 0 for v in fractions.values()),
+        "kind": "real",
+        "real_fraction": fractions,
+        "reason": "Real observations (NSIDC SIC, ERA5, CMEMS GLORYS).",
+    }
+
 
 @app.on_event("startup")
 async def startup():
-    global DS, BERGS, GRID_CACHE
+    global DS, BERGS, GRID_CACHE, DATA_PROVENANCE
     try:
         DS = xr.open_zarr(ZARR_PATH)
         print(f"Loaded Zarr cube: {ZARR_PATH}")
         print(f"  Time range: {DS.time.values[0]} to {DS.time.values[-1]}")
         print(f"  Grid: {DS.dims}")
+        DATA_PROVENANCE = _assess_provenance(DS)
+        if DATA_PROVENANCE["is_real"]:
+            print("  Provenance: REAL observations "
+                  f"({DATA_PROVENANCE['real_fraction']})")
+        else:
+            print("  Provenance: ⚠ SYNTHETIC — " + DATA_PROVENANCE["reason"])
+            print("  The web UI will badge every field as synthetic.")
     except Exception as e:
         print(f"Warning: Could not load Zarr cube: {e}")
         print("  Field endpoints will return 404 until a cube exists.")
@@ -71,10 +106,19 @@ async def startup():
 
     if DS is not None and GRID_CACHE is None:
         try:
-            from src.data.sources.bathymetry import load_canonical_bathymetry_grid
+            from src.data.sources.bathymetry import RAW_BATHY_DIR, load_canonical_bathymetry_grid
+            # Never fetch over the network during startup — that blocks the port from
+            # binding. Use the IBCSO GeoTIFF only if it has already been downloaded.
+            if not (RAW_BATHY_DIR / "IBCSO_v2_bed_WGS84.tif").exists():
+                raise FileNotFoundError(
+                    "IBCSO bathymetry not present; run "
+                    "`PYTHONPATH=. python -c 'from src.data.sources.bathymetry import "
+                    "fetch_gebco_ibcso_bathymetry as f; f()'` to fetch it"
+                )
             raw_b = load_canonical_bathymetry_grid()
             real_bathy = np.nan_to_num(raw_b, nan=0.0).tolist()
-        except Exception:
+        except Exception as e:
+            print(f"Note: using cube bathymetry instead of IBCSO ({type(e).__name__}).")
             real_bathy = np.nan_to_num(DS["bathy"].values, nan=0.0).tolist() if "bathy" in DS else None
 
         GRID_CACHE = {
@@ -86,6 +130,11 @@ async def startup():
             "cell_size_km": 25,
             "bathymetry_source": "GEBCO / IBCSO v2 (DOI: 10.1594/PANGAEA.937574)",
         }
+
+
+def _grid_shape():
+    """(ny, nx) of the loaded cube, for validating cached forecasts against it."""
+    return tuple(DS["land_mask"].values.shape) if DS is not None else None
 
 
 def _observed_at(date_str):
@@ -116,6 +165,7 @@ async def get_config():
         "held_out_demo_dates": DOMAIN["held_out_demo_dates"],
         "forecast_horizon_days": DOMAIN["time"]["forecast_horizon_days"],
         "ship": DOMAIN["ship"],
+        "data_provenance": DATA_PROVENANCE,
         "routing_weights": ROUTING["cost_weights"],
         "alternative_profiles": {k: v["name"] for k, v in 
                                  ROUTING["alternatives"]["profiles"].items()},
@@ -180,6 +230,14 @@ async def get_grid():
 @app.get("/data/provenance")
 async def get_data_provenance():
     """Return cryptographic SHA-256 provenance metadata for all 6 data sources."""
+    if not DATA_PROVENANCE["is_real"]:
+        # Refuse rather than render "SHA-256 VERIFIED" over generated fields.
+        raise HTTPException(
+            409,
+            "No real data layers present. " + DATA_PROVENANCE["reason"] +
+            " Provenance records exist only for the real cube; download it with "
+            "`python scripts/download_data.py --gdrive-id <ID>`.",
+        )
     from src.data.report_coverage import (
         analyze_sic_coverage,
         analyze_thickness_coverage,
@@ -254,7 +312,7 @@ async def get_forecast(date: str, lead: int = 7):
     if not (DS.time.values[0] <= valid_dt <= DS.time.values[-1]):
         raise HTTPException(400, f"Valid date {valid_dt} is outside the cube")
 
-    cached = load_cached_forecast(date, ZARR_PATH)
+    cached = load_cached_forecast(date, ZARR_PATH, grid_shape=_grid_shape())
     if cached is not None and lead <= cached.shape[0]:
         sic = cached[lead - 1]
         source = "model"
@@ -303,6 +361,9 @@ async def get_observed(date: str):
             "sic": sic.tolist(),
             "shape": list(sic.shape),
             "date": str(np.datetime64(DS.time.values[idx], 'D')),
+            # "observed" only when the cube is real; a synthetic cube returns
+            # generated fields and must never be labelled as an observation.
+            "source": "observed" if DATA_PROVENANCE["is_real"] else "synthetic",
             "stats": {
                 "mean_sic": float(np.mean(sic[ocean])),
                 "ice_extent_km2": int(np.sum((sic > 0.15) & ocean) * 625),
@@ -693,7 +754,8 @@ async def compute_route(req: RouteRequest):
     
     # Route across the model's forecast, initialized on the departure date.
     # sic_fields[d] is the field the ship meets on day d+1 of the passage.
-    cached = load_cached_forecast(req.depart_date, ZARR_PATH)
+    cached = load_cached_forecast(req.depart_date, ZARR_PATH,
+                                  grid_shape=_grid_shape())
     if cached is not None:
         sic_fields = cached[:horizon]
         forecast_source = "model"

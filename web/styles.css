@@ -833,3 +833,66 @@ input[type="range"]::-webkit-slider-thumb:hover {
     0% { background-position: 200% 0; }
     100% { background-position: -200% 0; }
 }
+
+/* ─── Data provenance banner ───
+   Shown whenever displayed data is not real live observations: a synthetic
+   cube, or frozen fixtures served because the backend is unreachable. */
+#provenance-banner {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    padding: 8px 18px;
+    background: #b3123a;
+    color: #fff;
+    border-bottom: 2px solid #ff3b6b;
+    box-shadow: 0 2px 14px rgba(179, 18, 58, 0.55);
+    font-size: 12.5px;
+    line-height: 1.45;
+}
+
+#provenance-banner .pb-tag {
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+}
+
+#provenance-banner .pb-detail {
+    opacity: 0.92;
+    font-weight: 500;
+}
+
+/* Push the app down so the banner never covers the header. */
+body.has-provenance-banner .app-container {
+    padding-top: 38px;
+}
+
+/* Per-field provenance badges. */
+.src-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 7px;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    vertical-align: middle;
+}
+
+.src-badge.src-real {
+    background: rgba(46, 213, 115, 0.15);
+    color: #2ed573;
+    border: 1px solid rgba(46, 213, 115, 0.4);
+}
+
+.src-badge.src-fake {
+    background: rgba(255, 59, 107, 0.15);
+    color: #ff6b8a;
+    border: 1px solid rgba(255, 59, 107, 0.45);
+}
