@@ -26,7 +26,8 @@ const provenanceService = {
    * (distinct from /bergs, which propagates drift forward in time).
    */
   async getLiveBergs() {
-    const { data } = await apiClient.get('/bergs/live');
+    // Optional external feed — the map shows "unavailable" instead of a toast
+    const { data } = await apiClient.get('/bergs/live', { silent: true });
     return data;
   },
 };

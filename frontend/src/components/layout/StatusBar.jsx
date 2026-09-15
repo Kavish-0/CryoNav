@@ -18,7 +18,7 @@ export default function StatusBar() {
         </div>
         <div className="statusbar-item">
           <Cpu size={11} />
-          <span>Model: U-Net v1 (not trained)</span>
+          <span>Model: U-Net sea-ice forecaster</span>
         </div>
       </div>
       <div className="statusbar-right">

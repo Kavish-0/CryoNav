@@ -15,6 +15,7 @@
 
 import React, { useEffect, useRef } from 'react';
 import { Play, Pause, Layers as LayersIcon } from 'lucide-react';
+import { BERG_HORIZON_PRESETS } from '@utils/constants';
 
 export const SIC_MODES = [
   { id: 'observed', label: 'Observed' },
@@ -120,6 +121,18 @@ export default function MapControls({
           type="range" min={1} max={60} step={1} value={bergHorizon}
           onChange={(e) => setBergHorizon(Number(e.target.value))}
         />
+        <div className="mc-modes mc-presets" aria-label="Drift horizon presets">
+          {BERG_HORIZON_PRESETS.map((days) => (
+            <button
+              key={days}
+              type="button"
+              className={`mc-mode ${bergHorizon === days ? 'is-active' : ''}`}
+              onClick={() => setBergHorizon(days)}
+            >
+              {days}d
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );

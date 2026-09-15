@@ -1,18 +1,26 @@
 /* Icebergs Page — Inventory, tracking, trajectories
-   Wired to the real GET /bergs endpoint (synthetic demo set of 5 bergs
-   with RK4 physics-based ensemble drift). */
+   Wired to GET /bergs: the largest tracked bergs for the date with their
+   drift ensembles. The page reports the backend's `source` (observed
+   BYU/NIC tracks or synthetic fallback) rather than assuming either. */
 import React, { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Anchor, Navigation, AlertTriangle, MapPin, ExternalLink } from 'lucide-react';
 import useAppStore from '@stores/useAppStore';
-import { useIcebergs } from '@hooks/useIcebergs';
+import useMapStore from '@stores/useMapStore';
+import { useIcebergsMeta } from '@hooks/useIcebergs';
+import { describeBergSource } from '@utils/routeAssessment';
 import { formatCoords } from '@utils/formatters';
 import { haversineKm } from '@utils/geo';
 
 export default function IcebergsPage() {
   const navigate = useNavigate();
   const selectedDate = useAppStore((s) => s.selectedDate);
-  const { data: bergs, isLoading, isError, error } = useIcebergs(selectedDate, 7);
+  /* Same drift horizon as the map, and the envelope kept so the page can say
+     which dataset the bergs came from instead of assuming. */
+  const bergHorizon = useMapStore((s) => s.bergHorizon);
+  const { data: meta, isLoading, isError, error } = useIcebergsMeta(selectedDate, bergHorizon);
+  const bergs = meta?.bergs;
+  const sourceInfo = describeBergSource(meta?.source);
   const [selectedBergId, setSelectedBergId] = useState(null);
 
   const selectedBerg = useMemo(
@@ -42,7 +50,9 @@ export default function IcebergsPage() {
     <div>
       <div className="page-header">
         <h1 className="page-title">Iceberg Tracking</h1>
-        <p className="page-subtitle">Synthetic demo icebergs with RK4 physics-based drift predictions</p>
+        <p className="page-subtitle">
+          Tracked icebergs with ensemble drift predictions{meta?.source ? ` · source: ${meta.source}` : ''}
+        </p>
       </div>
 
       <div className="card" style={{ marginBottom: 'var(--space-4)' }}>
@@ -60,7 +70,7 @@ export default function IcebergsPage() {
             <tr>
               <th>ID</th>
               <th>Start Position ({selectedDate})</th>
-              <th>Projected Position (+{7}d)</th>
+              <th>Projected Position (+{bergHorizon}d)</th>
               <th>Dimensions</th>
               <th>Ensemble</th>
               <th>Actions</th>
@@ -155,17 +165,25 @@ export default function IcebergsPage() {
 
         <div className="card">
           <div className="card-header">
-            <div className="card-title"><AlertTriangle size={16} /> Known Issues</div>
+            <div className="card-title"><AlertTriangle size={16} /> Data Source &amp; Model Notes</div>
           </div>
           <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
-            <div className="alert-card warning">
-              <span>RK4 position delta is computed but discarded — uses Euler step instead</span>
-            </div>
-            <div className="alert-card warning">
-              <span>Forcing uses fabricated sinusoidal wind/current functions</span>
-            </div>
+            {sourceInfo && (
+              <div className={`alert-card ${sourceInfo.tone === 'success' ? 'success' : sourceInfo.tone === 'danger' ? 'critical' : 'warning'}`}>
+                <span>{sourceInfo.label} (reported by GET /bergs for {selectedDate})</span>
+              </div>
+            )}
             <div className="alert-card info">
-              <span>BYU/NIC real iceberg database available but unused for validation</span>
+              <span>
+                {meta?.n_ensemble ?? '—'}-member ensemble per berg over {bergHorizon} days (horizon shared with the map).
+                The spread is the uncertainty — the mean track alone is not a certain position.
+              </span>
+            </div>
+            <div className="alert-card warning">
+              <span>
+                Known model limitation: the drift step computes an RK4 displacement but advances position with the
+                mean of the start and end velocities (src/berg/dynamics.py).
+              </span>
             </div>
           </div>
         </div>

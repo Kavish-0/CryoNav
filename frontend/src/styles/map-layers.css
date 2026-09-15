@@ -283,7 +283,6 @@
 }
 
 @media (max-width: 900px) {
-  .map-legend { display: none; }
   .map-chips { display: none; }
 }
 
@@ -330,7 +329,7 @@
    ═══════════════════════════════════════════════════════════════ */
 .map-workspace {
   display: grid;
-  grid-template-columns: 300px 1fr 300px;
+  grid-template-columns: 300px 1fr 340px;
   height: calc(100vh - var(--topbar-height) - var(--statusbar-height));
   /* Cancel the page container's padding so the map reaches the edges */
   margin: calc(var(--space-5) * -1);
@@ -382,13 +381,12 @@
 }
 .map-panel-section select { margin-bottom: var(--space-2); }
 
-/* Narrow screens: panels fold under the map instead of overlapping it */
-@media (max-width: 1200px) {
-  .map-workspace { grid-template-columns: 260px 1fr; }
-  .map-panel-right { display: none; }
-}
+/* Narrow screens (MapPage's NARROW_QUERY): one tabbed panel beside the map.
+   Phones: the panel folds under the map instead of overlapping it. */
+.map-workspace.is-narrow { grid-template-columns: 300px 1fr; }
 @media (max-width: 860px) {
-  .map-workspace {
+  .map-workspace,
+  .map-workspace.is-narrow {
     grid-template-columns: 1fr;
     grid-template-rows: 55vh auto;
     height: auto;
@@ -397,3 +395,157 @@
   .map-panel-left { border-right: none; border-top: 1px solid var(--color-border-primary); }
   .map-canvas-wrap { grid-row: 1; }
 }
+
+/* ── Collapsible panel sections ────────────────────────────────── */
+.ps-head {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  padding: 0; background: none; border: none; cursor: pointer; text-align: left;
+  font-family: var(--font-family-mono); font-size: 10px;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--color-text-tertiary);
+}
+.ps-head:hover { color: var(--color-text-secondary); }
+.ps-title { flex: 1; }
+.ps-meta { letter-spacing: 0.04em; text-transform: none; color: var(--color-text-tertiary); }
+.ps-chevron { transition: transform var(--transition-base); }
+.ps.is-open .ps-chevron { transform: rotate(180deg); }
+.ps.is-open .ps-head { margin-bottom: var(--space-3); }
+
+.map-panel-empty {
+  display: flex; flex-direction: column; align-items: center; gap: var(--space-2);
+  text-align: center; font-size: var(--font-size-xs); line-height: 1.5;
+  color: var(--color-text-tertiary);
+}
+.map-panel .map-panel-empty { padding: var(--space-5) var(--space-4); }
+.map-layer-note {
+  margin: 0 0 var(--space-2) 22px;
+  font-size: 10px; line-height: 1.4; color: var(--color-text-tertiary);
+}
+.mc-presets { margin: var(--space-2) 0 0; }
+
+/* ── Tabs (narrow workspace) ───────────────────────────────────── */
+.map-tabs {
+  position: sticky;
+  top: calc(var(--space-3) * -1);
+  z-index: 5;
+  display: flex; gap: 2px;
+  margin: calc(var(--space-3) * -1) calc(var(--space-3) * -1) 0;
+  padding: var(--space-3);
+  background: var(--color-bg-secondary);
+  border-bottom: 1px solid var(--color-border-primary);
+}
+.map-tab {
+  flex: 1;
+  padding: 6px 4px;
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border-primary);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-family-mono); font-size: 10px;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+.map-tab:hover { border-color: var(--color-border-accent); }
+.map-tab.is-active {
+  background: var(--color-accent-blue-dim);
+  border-color: var(--color-accent-blue);
+  color: var(--color-accent-blue);
+  font-weight: 700;
+}
+
+/* ── Route indications on the map ──────────────────────────────── */
+.route-arrow-marker,
+.route-waypoint-marker,
+.route-endpoint { background: none !important; border: none !important; }
+
+.route-arrow {
+  display: block; width: 16px; height: 16px;
+  color: var(--route-color);
+  filter: drop-shadow(0 1px 2px rgba(13, 27, 42, 0.35));
+}
+.route-arrow svg { display: block; fill: currentColor; stroke: #ffffff; stroke-width: 1.4; stroke-linejoin: round; }
+
+.route-waypoint {
+  display: flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: #ffffff; border: 2px solid var(--route-color);
+  font-family: var(--font-family-mono); font-size: 8.5px; font-weight: 700;
+  color: var(--color-text-primary);
+  box-shadow: 0 1px 4px rgba(13, 27, 42, 0.3);
+}
+
+.route-endpoint { position: relative; }
+.re-pin {
+  display: flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 50%;
+  border: 2px solid #ffffff; color: #ffffff;
+  box-shadow: 0 2px 8px rgba(13, 27, 42, 0.35);
+}
+.route-endpoint-origin .re-pin { background: var(--color-success); }
+.route-endpoint-destination .re-pin { background: var(--color-text-primary); }
+.route-endpoint.is-planned .re-pin { opacity: 0.8; border-style: dashed; }
+.re-label {
+  position: absolute; left: 26px; top: 50%; transform: translateY(-50%);
+  padding: 2px 7px; white-space: nowrap;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid var(--color-border-secondary);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-family-primary); font-size: 10.5px; font-weight: 600;
+  color: var(--color-text-primary);
+  box-shadow: var(--shadow-sm);
+  pointer-events: none;
+}
+.re-label em {
+  margin-right: 4px; font-style: normal;
+  font-family: var(--font-family-mono); font-size: 9px;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--color-text-tertiary);
+}
+
+.place-marker.is-origin .place-label { border-color: var(--color-success); box-shadow: 0 0 0 2px rgba(15, 122, 83, 0.25), 0 2px 10px rgba(13, 27, 42, 0.25); }
+.place-marker.is-destination .place-label { border-color: var(--color-text-primary); box-shadow: 0 0 0 2px rgba(13, 27, 42, 0.2), 0 2px 10px rgba(13, 27, 42, 0.25); }
+.map-popup .mp-role { margin-top: 6px; font-size: 10px; font-weight: 700; color: var(--color-accent-blue); }
+.map-popup .mp-hint { margin-top: 5px; font-size: 9.5px; color: var(--color-text-tertiary); }
+
+/* Selected-route summary floating on the map */
+.map-route-chip {
+  position: absolute; left: var(--space-3); bottom: var(--space-3); z-index: 1000;
+  display: flex; align-items: center; gap: 8px;
+  max-width: calc(100% - 2 * var(--space-3));
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid var(--color-border-primary);
+  border-left: 3px solid var(--route-color, var(--color-accent-blue));
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  font-family: var(--font-family-primary); font-size: 11px;
+  color: var(--color-text-primary); text-align: left;
+}
+button.map-route-chip { cursor: pointer; }
+.map-route-chip.is-busy { color: var(--color-text-secondary); }
+.mrc-text { display: flex; flex-direction: column; line-height: 1.3; min-width: 0; }
+.mrc-stats { font-family: var(--font-family-mono); font-size: 10.5px; color: var(--color-text-secondary); }
+
+.map-chip.is-inspect { color: var(--color-accent-cyan); font-weight: 600; }
+
+/* Bergs flagged by the route screen */
+.berg-marker-inner.is-danger .berg-radar-pulse { border-color: rgba(198, 40, 40, 0.8); }
+.berg-marker-inner.is-danger svg { filter: drop-shadow(0 0 6px rgba(198, 40, 40, 0.9)); }
+.berg-marker-inner.is-caution .berg-radar-pulse { border-color: rgba(180, 83, 9, 0.8); }
+.berg-marker-inner.is-caution svg { filter: drop-shadow(0 0 6px rgba(180, 83, 9, 0.85)); }
+.map-tooltip .mt-screen { margin-top: 3px; font-size: 10px; font-weight: 700; }
+.map-tooltip .mt-danger { color: var(--color-danger); }
+.map-tooltip .mt-caution { color: var(--color-warning); }
+.map-tooltip .mt-clear { color: var(--color-success); }
+
+/* Legend swatches for route indications */
+.lg-letter {
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 15px; height: 15px; border-radius: 50%;
+  font-family: var(--font-family-mono); font-size: 8.5px; font-weight: 700; color: #ffffff;
+}
+.lg-casing { width: 16px; height: 4px; border-radius: 3px; box-shadow: 0 0 0 2px #ffffff, 0 0 0 3px rgba(13, 27, 42, 0.25); }
+.lg-chevron { width: 10px; height: 10px; clip-path: polygon(50% 0, 100% 100%, 50% 72%, 0 100%); transform: rotate(90deg); }
+.lg-pin { width: 11px; height: 11px; border-radius: 50%; border: 2px solid #ffffff; box-shadow: 0 0 0 1px rgba(13, 27, 42, 0.3); }
+.lg-wp { width: 11px; height: 11px; border-radius: 50%; background: #ffffff; border: 2px solid; }
+.lg-ring-solid { width: 11px; height: 11px; border-radius: 50%; border: 2px solid; }

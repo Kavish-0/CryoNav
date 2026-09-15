@@ -20,7 +20,7 @@ export function useConnectionStatus() {
 
   const { isSuccess } = useQuery({
     queryKey: ['health-check'],
-    queryFn: configService.getConfig,
+    queryFn: configService.ping,
     refetchInterval: 30 * 1000, // poll every 30s
     retry: false,
     staleTime: 0,

@@ -2,6 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import provenanceService from '@services/provenanceService';
+import { retryUnlessMissing } from '@services/api';
 
 export function useProvenance() {
   return useQuery({
@@ -16,6 +17,7 @@ export function useLiveBergs() {
     queryKey: ['bergs-live'],
     queryFn: provenanceService.getLiveBergs,
     staleTime: 60 * 60 * 1000,   // weekly feed — no point polling it
+    retry: retryUnlessMissing,
   });
 }
 

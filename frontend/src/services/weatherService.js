@@ -20,7 +20,8 @@ const weatherService = {
    * }>}
    */
   async getWeather(date, stride = 6) {
-    const { data } = await apiClient.get('/weather', { params: { date, stride } });
+    // Optional endpoint — the map shows "unavailable" instead of a toast
+    const { data } = await apiClient.get('/weather', { params: { date, stride }, silent: true });
     return data;
   },
 };

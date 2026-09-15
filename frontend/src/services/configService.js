@@ -18,6 +18,17 @@ const configService = {
   },
 
   /**
+   * Background reachability check for the connection indicator. Silent: the
+   * backend runs a route calculation on its event loop for up to a minute,
+   * and a poll timing out meanwhile should flip the indicator, not raise an
+   * error toast.
+   */
+  async ping() {
+    const { data } = await apiClient.get('/config', { silent: true });
+    return data;
+  },
+
+  /**
    * Domain bounds from /config, combined with the real grid geometry from
    * GET /grid. The shape and cell size are now live values rather than the
    * constants this used to hardcode — /grid is the authority.

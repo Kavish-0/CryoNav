@@ -228,13 +228,78 @@ export const MAP_LAYERS = {
   BATHYMETRY: { id: 'bathymetry', label: 'Bathymetry', color: '#1e3a5f', defaultOn: false },
 };
 
-/* ── Route Types ────────────────────────────────────────────── */
-export const ROUTE_TYPES = {
-  SHORTEST: { id: 'shortest', label: 'Shortest', color: '#4a9eff' },
-  SAFEST: { id: 'safest', label: 'Safest', color: '#10b981' },
-  FUEL_EFFICIENT: { id: 'fuel', label: 'Fuel-Efficient', color: '#f59e0b' },
-  BALANCED: { id: 'balanced', label: 'AI-Balanced', color: '#8b5cf6' },
+/* ── Route Profiles ─────────────────────────────────────────────
+   POST /route returns every alternative defined in the backend's
+   config/routing.yaml, keyed by profile id. This table only adds what the
+   UI needs to draw and refer to them — a letter, a colour and a line
+   style — so the map, cards, table and legend always agree. Full names
+   still come from the response (`profile_name`). A profile the backend
+   adds later falls back to FALLBACK_ROUTE_STYLE and the next letter. */
+export const ROUTE_PROFILES = {
+  balanced: {
+    letter: 'A', label: 'Balanced', color: '#1668c9', dashArray: null,
+    summary: 'Trade-off between time, fuel and sea-ice / iceberg risk',
+  },
+  min_ice: {
+    letter: 'B', label: 'Minimum Ice', color: '#0f7a53', dashArray: null,
+    summary: 'Heaviest weight on sea-ice and iceberg risk',
+  },
+  min_time: {
+    letter: 'C', label: 'Minimum Time', color: '#c2570b', dashArray: null,
+    summary: 'Fastest passage; accepts more ice exposure',
+  },
+  great_circle: {
+    letter: 'D', label: 'Great Circle', color: '#6d3fd4', dashArray: '8 6',
+    summary: 'Reference only — ignores sea ice and icebergs',
+  },
+  persistence_route: {
+    letter: 'E', label: "Today's Ice", color: '#c62828', dashArray: '2 6',
+    summary: 'Reference — routed on departure-day ice, no forecast',
+  },
 };
+
+export const ROUTE_PROFILE_ORDER = ['balanced', 'min_ice', 'min_time', 'great_circle', 'persistence_route'];
+
+/** The profile the backend marks as recommended (see src/routing/alternatives.py). */
+export const RECOMMENDED_PROFILE = 'balanced';
+
+export const FALLBACK_ROUTE_STYLE = {
+  color: '#47596f', dashArray: '4 4', summary: 'Additional backend profile',
+};
+
+/* What the planner's "priority" chooses: which of the computed
+   alternatives is selected after calculation. The backend always computes
+   all of them in one call. */
+export const ROUTE_PRIORITIES = [
+  { id: 'balanced', label: 'Balanced' },
+  { id: 'min_ice', label: 'Least ice' },
+  { id: 'min_time', label: 'Fastest' },
+];
+
+/* ── Route hazard bands ─────────────────────────────────────────
+   Display thresholds for labelling backend numbers and route geometry.
+   They are presentation choices, not part of the routing model, and the
+   UI shows them next to the values they summarise. */
+
+/** max_berg_risk: peak berg-presence probability (0–1) along the route. */
+export const BERG_RISK_BANDS = { moderate: 0.05, high: 0.2 };
+
+/** Hours spent in SIC > 30% (ice_hours_03) and SIC > 70% (ice_hours_07). */
+export const ICE_EXPOSURE_BANDS = { moderateHours03: 12, highHours07: 6 };
+
+/** Sea-ice concentration bands for colouring the selected route (high → low). */
+export const SIC_ROUTE_BANDS = [
+  { id: 'heavy', min: 0.7, label: 'SIC ≥ 70%', color: '#c62828', drawn: true },
+  { id: 'moderate', min: 0.3, label: 'SIC 30–70%', color: '#d97706', drawn: true },
+  { id: 'light', min: 0.15, label: 'SIC 15–30%', color: '#7fb8d6', drawn: false },
+  { id: 'open', min: 0, label: 'Open water < 15%', color: '#dbe7f1', drawn: false },
+];
+
+/** Berg-to-route screening distances (nm, after subtracting half the berg length). */
+export const BERG_PROXIMITY_NM = { danger: 30, caution: 100 };
+
+/* ── Iceberg drift horizon presets (days) ─────────────────────── */
+export const BERG_HORIZON_PRESETS = [7, 14, 30, 60];
 
 /* ── Risk Levels ────────────────────────────────────────────── */
 export const RISK_LEVELS = {

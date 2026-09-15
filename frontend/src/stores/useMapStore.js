@@ -40,6 +40,11 @@ const useMapStore = create((set, get) => ({
   /* ── Map Interaction Mode ── */
   interactionMode: 'navigate',  // 'navigate' | 'selectOrigin' | 'selectDestination' | 'measure'
   setInteractionMode: (mode) => set({ interactionMode: mode }),
+
+  /* ── Iceberg Drift Horizon ──
+     Shared by the map and the Icebergs page so both show the same drift. */
+  bergHorizon: 7,  // days, 1–60
+  setBergHorizon: (days) => set({ bergHorizon: days }),
 }));
 
 export default useMapStore;

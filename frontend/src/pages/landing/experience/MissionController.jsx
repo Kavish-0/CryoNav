@@ -41,6 +41,8 @@ export function MissionController({ children, scrollRef }) {
 
   useEffect(() => {
     let frame = null;
+    let lastProgress = -1;
+    let stillFrames = 0;
 
     const tick = () => {
       frame = null;
@@ -54,9 +56,20 @@ export function MissionController({ children, scrollRef }) {
         phaseRef.current = idx;
         setPhaseIndex(idx);          // the only React update in the loop
       }
+
+      // The scroll driver keeps easing after the last scroll event fires, so
+      // keep deriving until it settles. Otherwise the mission freezes short
+      // of where the reader stopped — at the bottom of the page that meant
+      // the final phase, and its Enter button, never appeared. A few still
+      // frames are required before stopping because this listener can run
+      // in the same frame as, but before, the driver's first easing step.
+      stillFrames = Math.abs(p - lastProgress) > 1e-5 ? 0 : stillFrames + 1;
+      lastProgress = p;
+      if (stillFrames < 3) frame = requestAnimationFrame(tick);
     };
 
     const onScroll = () => {
+      stillFrames = 0;
       if (frame === null) frame = requestAnimationFrame(tick);
     };
 

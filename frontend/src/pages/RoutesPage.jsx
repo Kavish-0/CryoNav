@@ -1,247 +1,100 @@
-/* Routes Page — Route planning, comparison, cost breakdown
-   Wired to the real backend: POST /route (via useRouteCalculation) and
-   GET /config (via useConfig) for the actual origin/station list. */
-import React, { useEffect, useMemo } from 'react';
-import { Route as RouteIcon, MapPin, Fuel, ShieldAlert, Compass, AlertTriangle, CheckCircle2 } from 'lucide-react';
-import useRouteStore from '@stores/useRouteStore';
-import useAppStore from '@stores/useAppStore';
-import { useConfig } from '@hooks/useConfig';
-import { useRouteCalculation } from '@hooks/useRouteCalculation';
-import { formatDistance, formatDuration, formatFuel } from '@utils/formatters';
+/* Routes Page — route planning, comparison, guidance and hazards.
 
-const WEIGHT_LABELS = {
-  wTime: 'Time',
-  wFuel: 'Fuel',
-  wRisk: 'Ice/Berg Risk',
-};
+   The same components as the map workspace, laid out as a report. The
+   selection lives in useRouteStore, so choosing a route here and opening
+   the map shows that same route. Wired to POST /route (every alternative
+   in one call) and GET /config for the real origin and station list. */
 
-function formatCell(key, value) {
-  if (value === undefined || value === null) return '—';
-  switch (key) {
-    case 'distance_nm':
-      return formatDistance(value);
-    case 'time_h':
-      return formatDuration(value);
-    case 'fuel_t':
-      return formatFuel(value);
-    case 'ice_hours_03':
-    case 'ice_hours_07':
-      return `${value.toFixed(1)} h`;
-    case 'max_berg_risk':
-      return value.toFixed(2);
-    default:
-      return String(value);
-  }
-}
+import React from 'react';
+import { useNavigate } from 'react-router-dom';
+import {
+  Compass, Route as RouteIcon, Navigation, ShieldAlert, ListOrdered, Map as MapIcon,
+} from 'lucide-react';
+import { useSelectedRoute } from '@hooks/useSelectedRoute';
+import { useRouteHazards } from '@hooks/useRouteHazards';
+import RoutePlanner from '@components/routes/RoutePlanner';
+import RouteComparison from '@components/routes/RouteComparison';
+import RouteMetrics from '@components/routes/RouteMetrics';
+import RouteHazards from '@components/routes/RouteHazards';
+import NavigationGuidance from '@components/routes/NavigationGuidance';
+import '@styles/routes.css';
 
 export default function RoutesPage() {
-  const {
-    origin, destination, costWeights, routes,
-    setOrigin, setDestination, setCostWeight, setRoutes,
-    isCalculating, setCalculating,
-  } = useRouteStore();
-  const selectedDate = useAppStore((s) => s.selectedDate);
-
-  const { data: config, isLoading: configLoading, isError: configError } = useConfig();
-  const mutation = useRouteCalculation();
-
-  /** Merge origins + stations from /config into one selectable waypoint list */
-  const waypoints = useMemo(() => {
-    if (!config) return [];
-    const fromDict = (dict) =>
-      Object.entries(dict || {}).map(([id, w]) => ({ id, name: w.name || id, lat: w.lat, lon: w.lon }));
-    return [...fromDict(config.origins), ...fromDict(config.stations)];
-  }, [config]);
-
-  /* Default origin/destination to the backend's own defaults once config loads */
-  useEffect(() => {
-    if (!waypoints.length) return;
-    if (!origin) {
-      const def = waypoints.find((w) => w.id === 'cape_town') || waypoints[0];
-      setOrigin(def);
-    }
-    if (!destination) {
-      const def = waypoints.find((w) => w.id === 'bharati') || waypoints[1] || waypoints[0];
-      setDestination(def);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [waypoints]);
-
-  const handleCalculate = async () => {
-    if (!origin || !destination) return;
-    setCalculating(true);
-    try {
-      const result = await mutation.mutateAsync({
-        origin: origin.id,
-        destination: destination.id,
-        departDate: selectedDate,
-        wTime: costWeights.wTime,
-        wFuel: costWeights.wFuel,
-        wRisk: costWeights.wRisk,
-      });
-      setRoutes(result);
-    } finally {
-      setCalculating(false);
-    }
-  };
-
-  const headers = routes?.comparison?.headers || [];
-  const rows = routes?.comparison?.table || [];
-  const rejections = routes?.comparison?.rejections || [];
+  const navigate = useNavigate();
+  const { result, route } = useSelectedRoute();
+  const hazards = useRouteHazards(route, result);
+  const hasRoutes = Boolean(result?.list?.length);
 
   return (
     <div>
-      <div className="page-header">
-        <h1 className="page-title">Route Planning</h1>
-        <p className="page-subtitle">Time-expanded A* routing with POLARIS cost model</p>
+      <div className="page-header routes-page-header">
+        <div>
+          <h1 className="page-title">Route Planning</h1>
+          <p className="page-subtitle">
+            Time-expanded A* over forecast sea ice and iceberg drift risk — every alternative from one POST /route call
+          </p>
+        </div>
+        <button type="button" className="btn btn-secondary" onClick={() => navigate('/map')}>
+          <MapIcon size={14} /> {hasRoutes ? 'View on map' : 'Open map'}
+        </button>
       </div>
 
       <div className="grid-2" style={{ marginBottom: 'var(--space-4)' }}>
-        {/* Route Planner */}
         <div className="card">
           <div className="card-header">
-            <div className="card-title"><Compass size={16} /> Route Planner</div>
+            <div className="card-title"><Compass size={16} /> Voyage Planner</div>
           </div>
-          {configError && (
-            <div className="alert-card warning">
-              <span>Could not load /config — is the CryoNav backend running at the configured API_BASE_URL?</span>
-            </div>
-          )}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-            <div>
-              <label style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', marginBottom: 'var(--space-1)', display: 'block' }}>
-                <MapPin size={12} /> Origin
-              </label>
-              <select
-                disabled={configLoading || !waypoints.length}
-                value={origin?.id || ''}
-                onChange={(e) => setOrigin(waypoints.find((w) => w.id === e.target.value))}
-                style={{ width: '100%', padding: 'var(--space-2)', background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border-primary)', borderRadius: 'var(--radius-md)', color: 'var(--color-text-primary)', fontFamily: 'var(--font-family-primary)' }}
-              >
-                {waypoints.map((w) => (
-                  <option key={w.id} value={w.id}>{w.name}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', marginBottom: 'var(--space-1)', display: 'block' }}>
-                <MapPin size={12} /> Destination
-              </label>
-              <select
-                disabled={configLoading || !waypoints.length}
-                value={destination?.id || ''}
-                onChange={(e) => setDestination(waypoints.find((w) => w.id === e.target.value))}
-                style={{ width: '100%', padding: 'var(--space-2)', background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border-primary)', borderRadius: 'var(--radius-md)', color: 'var(--color-text-primary)', fontFamily: 'var(--font-family-primary)' }}
-              >
-                {waypoints.map((w) => (
-                  <option key={w.id} value={w.id}>{w.name}</option>
-                ))}
-              </select>
-            </div>
-            <button
-              className="btn btn-primary btn-lg"
-              style={{ marginTop: 'var(--space-2)' }}
-              onClick={handleCalculate}
-              disabled={isCalculating || mutation.isPending || !origin || !destination}
-            >
-              <RouteIcon size={16} /> {mutation.isPending ? 'Calculating…' : 'Calculate Routes'}
-            </button>
-            {mutation.isError && (
-              <div className="alert-card critical">
-                <span>{mutation.error?.response?.data?.detail || mutation.error?.message || 'Route calculation failed'}</span>
-              </div>
-            )}
-          </div>
+          <RoutePlanner />
         </div>
 
-        {/* Cost Weight Sliders — matches POST /route's w_time / w_fuel / w_risk exactly */}
         <div className="card">
           <div className="card-header">
-            <div className="card-title"><ShieldAlert size={16} /> Cost Weights (POLARIS)</div>
+            <div className="card-title"><Navigation size={16} /> Selected Route</div>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-            {Object.entries(costWeights).map(([key, value]) => (
-              <div className="range-slider" key={key}>
-                <label>
-                  <span>{WEIGHT_LABELS[key] || key}</span>
-                  <span className="text-mono" style={{ color: 'var(--color-accent-cyan)' }}>{value.toFixed(1)}</span>
-                </label>
-                <input
-                  type="range"
-                  min="0"
-                  max="5"
-                  step="0.1"
-                  value={value}
-                  onChange={(e) => setCostWeight(key, Number(e.target.value))}
-                />
-              </div>
-            ))}
-          </div>
-          <div className="card-footer" style={{ color: 'var(--color-text-tertiary)', fontSize: 'var(--font-size-xs)' }}>
-            Defaults match config/routing.yaml's "balanced" profile (w_time=1.0, w_fuel=0.5, w_risk=2.0).
-          </div>
+          <RouteMetrics route={route} result={result} />
         </div>
       </div>
 
-      {/* Route Comparison Table — driven by the real comparison.headers/table from POST /route */}
-      <div className="card">
+      <div className="card" style={{ marginBottom: 'var(--space-4)' }}>
         <div className="card-header">
           <div className="card-title"><RouteIcon size={16} /> Route Comparison</div>
-          {routes?.depart_date && (
-            <span className="badge badge-blue">{routes.origin?.name} → {routes.destination?.name} · {routes.depart_date}</span>
+          {result?.depart_date && (
+            <span className="badge badge-blue">
+              {result.origin?.name} → {result.destination?.name} · {result.depart_date}
+            </span>
           )}
         </div>
-        {rows.length > 0 ? (
-          <table className="table">
-            <thead>
-              <tr>
-                {headers.map((h) => (
-                  <th key={h.key} style={{ textAlign: h.align }}>{h.label}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.key}>
-                  {headers.map((h) => (
-                    <td key={h.key} style={{ textAlign: h.align, color: h.key === 'profile' ? undefined : 'var(--color-text-secondary)' }}>
-                      {h.key === 'profile' ? (
-                        <span style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-                          {row.success ? <CheckCircle2 size={14} style={{ color: 'var(--color-success)' }} /> : <AlertTriangle size={14} style={{ color: 'var(--color-danger)' }} />}
-                          {row.profile}
-                        </span>
-                      ) : (
-                        formatCell(h.key, row[h.key])
-                      )}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        {hasRoutes ? (
+          <RouteComparison result={result} variant="table" />
         ) : (
           <div className="empty-state" style={{ padding: 'var(--space-8)' }}>
-            <Fuel size={32} style={{ color: 'var(--color-text-tertiary)', opacity: 0.4 }} />
+            <RouteIcon size={32} style={{ color: 'var(--color-text-tertiary)', opacity: 0.4 }} />
             <p className="empty-state-description" style={{ marginTop: 'var(--space-3)' }}>
-              Select an origin and destination, then Calculate Routes to run the real A* engine.
+              Choose an origin and destination, then calculate to run the A* router. Every alternative appears
+              here, and the selection is shared with the map.
             </p>
           </div>
         )}
-
-        {rejections.length > 0 && (
-          <div style={{ padding: 'var(--space-3) var(--space-4)', display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
-            {rejections.map((r) => (
-              <div key={r.key} className={`alert-card ${r.recommended ? 'info' : 'warning'}`}>
-                <span><strong>{r.profile}:</strong> {r.reason}</span>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div className="card-footer" style={{ textAlign: 'center', color: 'var(--color-text-tertiary)', fontSize: 'var(--font-size-sm)' }}>
-          ⚠️ Note: routes now avoid icebergs — POST /route builds a berg-risk field by propagating the same bergs the map shows. Those bergs are still synthetic: the BYU-derived tracked_icebergs_2017_2024.parquet is not present, so positions are generated, not observed. Max Berg Risk reads 0.00 when a route simply passes nowhere near them.
-        </div>
       </div>
+
+      {hasRoutes && (
+        <div className="grid-2">
+          <div className="card">
+            <div className="card-header">
+              <div className="card-title"><ListOrdered size={16} /> Route Guidance</div>
+              <span className="badge badge-warning">Indicative</span>
+            </div>
+            <NavigationGuidance route={route} maxVisible={12} onFocusLeg={() => navigate('/map')} />
+          </div>
+
+          <div className="card">
+            <div className="card-header">
+              <div className="card-title"><ShieldAlert size={16} /> Hazards on Route</div>
+            </div>
+            <RouteHazards route={route} hazards={hazards} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

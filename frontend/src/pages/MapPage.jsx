@@ -1,40 +1,44 @@
 /* ═══════════════════════════════════════════════════════════════
-   Map Page — Real Leaflet map wired to live backend data.
+   Map Page — the operational workspace.
 
-   Two projections:
-     • Mercator (EPSG:3857) — the keyless Esri/OSM basemaps. Familiar,
-       but it cannot draw the pole and badly distorts the CryoNav
-       domain (everything south of ~60°S).
-     • Polar (EPSG:3031) — NASA GIBS tiles in Antarctic Polar
-       Stereographic, the projection the science data actually uses.
-       See utils/antarcticCrs.js for the tile grid.
+     planner + layers  |  map  |  routes, hazards, guidance + legend
 
+   Everything drawn comes from the backend: sea ice (GET /observed,
+   /forecast, /grid), iceberg drift ensembles (GET /bergs), the NIC feed
+   (GET /bergs/live), currents and wind (GET /ocean, /weather — optional),
+   bathymetry (GET /grid) and every route alternative (POST /route).
+   Route indications — direction, legs, ice along the route, bergs near
+   it — are derived in the browser from those responses and labelled so.
+
+   Two projections: Web Mercator on keyless Esri tiles, and Antarctic Polar
+   Stereographic (EPSG:3031) on NASA GIBS tiles (utils/antarcticCrs.js).
    MapContainer cannot change its `crs` after mount, so switching
    projection remounts it via `key`.
 
-   Wired layers: Stations (static, from constants), Icebergs (GET
-   /bergs), Routes (last POST /route result from useRouteStore).
-   Sea Ice is available as a real observational overlay in polar mode
-   (GIBS AMSR2); the model's own SIC field still has no backend route.
-   Weather, Ocean Currents, Risk Zones, Vessels and Bathymetry have no
-   backing data — those checkboxes are shown disabled rather than
-   silently doing nothing.
+   Below NARROW_QUERY the two side panels fold into one tabbed panel so the
+   map keeps most of the screen; below 860px the panel moves under the map.
    ═══════════════════════════════════════════════════════════════ */
 
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import L from 'leaflet';
-import { MapContainer, TileLayer, CircleMarker, Circle, Popup, Polyline, Tooltip } from 'react-leaflet';
-import { Layers, Globe } from 'lucide-react';
+import { MapContainer, TileLayer, Circle, Polyline, Tooltip } from 'react-leaflet';
+import {
+  Compass, Layers, Route as RouteIcon, Navigation, ShieldAlert, ListOrdered, Loader2,
+} from 'lucide-react';
 import useAppStore from '@stores/useAppStore';
 import useMapStore from '@stores/useMapStore';
 import useRouteStore from '@stores/useRouteStore';
-import { useIcebergs } from '@hooks/useIcebergs';
+import { useIcebergsMeta } from '@hooks/useIcebergs';
 import { useGrid } from '@hooks/useGrid';
 import { useObserved } from '@hooks/useObserved';
 import { useForecast } from '@hooks/useForecast';
 import { useLiveBergs } from '@hooks/useProvenance';
 import { useOcean, useWeather } from '@hooks/useOcean';
 import { useConfig } from '@hooks/useConfig';
+import { usePlanRoutes } from '@hooks/useRouteCalculation';
+import { useSelectedRoute } from '@hooks/useSelectedRoute';
+import { useRouteHazards } from '@hooks/useRouteHazards';
+import { useMediaQuery } from '@hooks/useMediaQuery';
 import SicCanvasLayer, { sicColor, diffColor } from '@components/map/SicCanvasLayer';
 import IcebergLayer from '@components/map/IcebergLayer';
 import BathymetryLayer from '@components/map/BathymetryLayer';
@@ -44,42 +48,40 @@ import PlaceMarkers from '@components/map/PlaceMarkers';
 import VectorFieldLayer from '@components/map/VectorFieldLayer';
 import MapLegend from '@components/map/MapLegend';
 import CoordinateChips from '@components/map/CoordinateChips';
+import RouteLayer from '@components/map/RouteLayer';
+import MapLayersPanel from '@components/map/MapLayersPanel';
+import PanelSection from '@components/map/PanelSection';
+import RoutePlanner from '@components/routes/RoutePlanner';
+import RouteComparison from '@components/routes/RouteComparison';
+import RouteMetrics from '@components/routes/RouteMetrics';
+import RouteHazards from '@components/routes/RouteHazards';
+import NavigationGuidance from '@components/routes/NavigationGuidance';
+import RiskIndicator from '@components/routes/RiskIndicator';
 import '@styles/map-layers.css';
 import {
-  MAP_DEFAULTS, RESEARCH_STATIONS, DEPARTURE_PORTS, MAP_LAYERS, BASEMAPS,
+  MAP_DEFAULTS, RESEARCH_STATIONS, DEPARTURE_PORTS, BASEMAPS,
   POLAR_BASEMAPS, POLAR_OVERLAYS, GIBS_ATTRIBUTION,
   DOMAIN_BOUNDS, ANTARCTIC_CIRCLE_RADIUS_M,
   gibsTileUrl, clampGibsDate,
 } from '@utils/constants';
 import { EPSG3031, GIBS_TILE_SIZE, GIBS_MAX_ZOOM } from '@utils/antarcticCrs';
-import { formatDistance, formatDuration } from '@utils/formatters';
+import { createGridLocator } from '@utils/navigation';
+import { formatNauticalMiles, formatDuration } from '@utils/formatters';
 
-/* Layers with a real backend data source behind them. Sea ice joined this
-   set once GET /grid arrived — the grid geometry it needs used to be
-   buried in each /forecast response. */
-const LIVE_LAYER_IDS = new Set([
-  'icebergs', 'trajectories', 'routes', 'stations',
-  'seaIce', 'seaIceForecast', 'bathymetry',
-  'oceanCurrents', 'weather',
-]);
+/** Below this width the planner and results share one tabbed panel. */
+const NARROW_QUERY = '(max-width: 1360px)';
 
-const ROUTE_COLORS = {
-  great_circle: '#6d3fd4',
-  min_ice: '#0f7a53',
-  min_time: '#c2570b',
-  balanced: '#1668c9',
-  persistence_route: '#c62828',
-};
+const TABS = [
+  { id: 'plan', label: 'Plan' },
+  { id: 'routes', label: 'Routes' },
+  { id: 'layers', label: 'Layers' },
+];
 
 /* Per-projection map view.
 
    Polar sits on the pole. Zoom is fractional (proj4leaflet interpolates
-   between the GIBS resolutions). The framing target is the whole
-   continent including the Antarctic Peninsula, which reaches ~3050 km
-   from the pole — z1 crops it badly and z0.5 still clips it, while z0
-   leaves wide empty margins beside the 8389 km grid. z0.25 gives
-   ±3015 km of vertical reach against a 8611 km horizontal span, so the
-   domain fills the frame with only a sliver of grid edge showing. */
+   between the GIBS resolutions). z0.25 frames the whole continent including
+   the Antarctic Peninsula with only a sliver of grid edge showing. */
 const VIEWS = {
   mercator: { center: MAP_DEFAULTS.center, zoom: MAP_DEFAULTS.zoom, minZoom: MAP_DEFAULTS.minZoom, zoomSnap: 1 },
   polar: { center: [-90, 0], zoom: 0.25, minZoom: 0, zoomSnap: 0.25 },
@@ -101,21 +103,74 @@ function GibsLayer({ spec, date, ...rest }) {
   );
 }
 
+/** Floating summary of the selected route, so it stays visible whatever panel is open. */
+function SelectedRouteChip({ route, hazards, isCalculating, onOpen }) {
+  if (isCalculating) {
+    return (
+      <div className="map-route-chip is-busy" role="status">
+        <Loader2 size={13} className="rp-spin" /> Calculating routes…
+      </div>
+    );
+  }
+  if (!route?.success) return null;
+
+  const danger = hazards.proximity?.filter((p) => p.level === 'danger').length ?? 0;
+  const caution = hazards.proximity?.filter((p) => p.level === 'caution').length ?? 0;
+  let screen = null;
+  if (danger > 0) screen = <RiskIndicator level="high" label={`${danger} berg${danger > 1 ? 's' : ''}: danger`} />;
+  else if (caution > 0) screen = <RiskIndicator level="moderate" label={`${caution} berg${caution > 1 ? 's' : ''}: caution`} />;
+  else if (hazards.proximity) screen = <RiskIndicator level="low" label="No bergs flagged" />;
+
+  const content = (
+    <>
+      <span className="route-letter" style={{ '--route-color': route.color }}>{route.letter}</span>
+      <span className="mrc-text">
+        <strong>Route {route.letter} · {route.label}</strong>
+        <span className="mrc-stats">
+          {formatNauticalMiles(route.distanceNm)} · {route.timeH != null ? formatDuration(route.timeH) : '—'}
+        </span>
+      </span>
+      {screen}
+    </>
+  );
+
+  return onOpen ? (
+    <button type="button" className="map-route-chip" style={{ '--route-color': route.color }} onClick={onOpen}>
+      {content}
+    </button>
+  ) : (
+    <div className="map-route-chip" style={{ '--route-color': route.color }}>{content}</div>
+  );
+}
+
 export default function MapPage() {
   const selectedDate = useAppStore((s) => s.selectedDate);
-  const { layers, toggleLayer } = useMapStore();
-  const routeResult = useRouteStore((s) => s.routes);
+  const layers = useMapStore((s) => s.layers);
+  const toggleLayer = useMapStore((s) => s.toggleLayer);
+  const bergHorizon = useMapStore((s) => s.bergHorizon);
+  const setBergHorizon = useMapStore((s) => s.setBergHorizon);
+
+  const origin = useRouteStore((s) => s.origin);
+  const destination = useRouteStore((s) => s.destination);
   const setOrigin = useRouteStore((s) => s.setOrigin);
   const setDestination = useRouteStore((s) => s.setDestination);
+  const isCalculating = useRouteStore((s) => s.isCalculating);
+  const routeLastRequest = useRouteStore((s) => s.lastRequest);
+  const { plan } = usePlanRoutes();
+  const { result: routeResult, route: selectedRoute } = useSelectedRoute();
+  const hazards = useRouteHazards(selectedRoute, routeResult);
+
+  const narrow = useMediaQuery(NARROW_QUERY);
+  const [tab, setTab] = useState('plan');
   const [showLiveBergs, setShowLiveBergs] = useState(false);
 
   /* ── Scrub state ── */
   const [leadDay, setLeadDay] = useState(7);
-  const [bergHorizon, setBergHorizon] = useState(7);
   const [sicMode, setSicMode] = useState('observed');
   const [playing, setPlaying] = useState(false);
 
-  const { data: bergs } = useIcebergs(selectedDate, bergHorizon);
+  const bergsQuery = useIcebergsMeta(selectedDate, bergHorizon);
+  const bergs = bergsQuery.data?.bergs;
 
   /* Grid geometry is fetched once and reused by every raster layer.
      Fields are only requested when something actually needs them, so
@@ -151,8 +206,7 @@ export default function MapPage() {
   const { data: config } = useConfig();
 
   /* Opens in Mercator on satellite imagery, matching the bundled web/
-     client. Polar stereographic stays one click away for looking at the
-     data in its native projection. */
+     client. Polar stereographic stays one click away. */
   const [projection, setProjection] = useState('mercator');
   const [basemapId, setBasemapId] = useState(MAP_DEFAULTS.basemap);
   const [polarBasemapId, setPolarBasemapId] = useState('blue_marble');
@@ -162,115 +216,103 @@ export default function MapPage() {
   const basemap = BASEMAPS[basemapId] || BASEMAPS[MAP_DEFAULTS.basemap];
   const polarBasemap = POLAR_BASEMAPS[polarBasemapId] || POLAR_BASEMAPS.blue_marble;
   const view = VIEWS[projection];
-
-  /* Sea ice is only a real layer in polar mode, where GIBS supplies it. */
   const seaIceDate = clampGibsDate(selectedDate, POLAR_OVERLAYS.seaIce.available);
 
-  const routePaths = useMemo(() => {
-    if (!routeResult?.routes) return [];
-    return Object.entries(routeResult.routes)
-      .filter(([, r]) => r.success && r.path_latlon?.length)
-      .map(([key, r]) => ({ key, name: r.profile_name, path: r.path_latlon, color: ROUTE_COLORS[key] || '#1668c9' }));
-  }, [routeResult]);
+  /* On a narrow screen, show the results as soon as a calculation lands. */
+  useEffect(() => {
+    if (narrow && routeResult) setTab('routes');
+  }, [narrow, routeResult]);
 
-  return (
-    <div className="map-workspace">
-      {/* Controls — fixed column, like the bundled client's left panel.
-          Nothing here floats over the map, so nothing can collide. */}
-      <aside className="map-panel map-panel-left">
-      <div className="map-panel-section">
-        <h3><Globe size={12} /> Projection</h3>
-        <select
-          value={projection}
-          onChange={(e) => setProjection(e.target.value)}
-          style={{ width: '100%', marginBottom: 'var(--space-3)', fontSize: 'var(--font-size-xs)' }}
-        >
-          <option value="polar">Polar Stereographic (EPSG:3031)</option>
-          <option value="mercator">Web Mercator (EPSG:3857)</option>
-        </select>
+  /* The lead-day animation lives in MapControls; stop it when that panel is hidden. */
+  useEffect(() => {
+    if (narrow && tab !== 'layers') setPlaying(false);
+  }, [narrow, tab]);
 
-        <h3><Layers size={12} /> Basemap</h3>
-        {isPolar ? (
-          <select
-            value={polarBasemapId}
-            onChange={(e) => setPolarBasemapId(e.target.value)}
-            style={{ width: '100%', marginBottom: 'var(--space-3)', fontSize: 'var(--font-size-xs)' }}
-          >
-            {Object.entries(POLAR_BASEMAPS).map(([id, b]) => (
-              <option key={id} value={id}>{b.label}</option>
-            ))}
-          </select>
-        ) : (
-          <select
-            value={basemapId}
-            onChange={(e) => setBasemapId(e.target.value)}
-            style={{ width: '100%', marginBottom: 'var(--space-3)', fontSize: 'var(--font-size-xs)' }}
-          >
-            {Object.entries(BASEMAPS).map(([id, b]) => (
-              <option key={id} value={id}>{b.label}</option>
-            ))}
-          </select>
-        )}
+  /* ── Cursor inspection: the grid cell under the pointer ── */
+  const locator = useMemo(() => createGridLocator(grid), [grid]);
+  const inspectField = !sicOn
+    ? null
+    : sicMode === 'difference' ? diffField : sicMode === 'forecast' ? forecast.data?.sic : observed.data?.sic;
 
-        {isPolar && (
-          <>
-            <h3><Layers size={12} /> NASA GIBS Overlays</h3>
-            {Object.entries(POLAR_OVERLAYS).map(([id, o]) => (
-              <label key={id} className={`map-layer-item ${polarOverlays[id] ? 'active' : ''}`}>
-                <input
-                  type="checkbox"
-                  checked={Boolean(polarOverlays[id])}
-                  onChange={() => setPolarOverlays((p) => ({ ...p, [id]: !p[id] }))}
-                />
-                <span>{o.label}</span>
-              </label>
-            ))}
-            {polarOverlays.seaIce && seaIceDate.clamped && (
-              <p style={{ fontSize: '10px', color: 'var(--color-text-tertiary)', margin: 'var(--space-2) 0 0' }}>
-                Sea ice shown for {seaIceDate.date} — AMSR2 does not cover {selectedDate}.
-              </p>
-            )}
-          </>
-        )}
+  const inspect = useCallback((lat, lon) => {
+    if (!locator || !grid) return null;
+    const cell = locator.nearest(lat, lon);
+    if (!cell) return null;
+    if (grid.land_mask?.[cell.y]?.[cell.x] > 0.5) return 'Land / ice shelf';
+    const parts = [];
+    const v = inspectField?.[cell.y]?.[cell.x];
+    if (Number.isFinite(v)) {
+      parts.push(sicMode === 'difference'
+        ? `ΔSIC ${v > 0 ? '+' : ''}${Math.round(v * 100)}%`
+        : `${sicMode === 'forecast' ? 'Forecast' : 'Observed'} SIC ${Math.round(v * 100)}%`);
+    }
+    const depth = grid.bathy?.[cell.y]?.[cell.x];
+    if (Number.isFinite(depth) && depth < 0) parts.push(`${Math.round(-depth).toLocaleString('en-US')} m deep`);
+    return parts.join(' · ') || null;
+  }, [locator, grid, inspectField, sicMode]);
 
-        <h3 style={{ marginTop: 'var(--space-3)' }}><Layers size={12} /> Data Layers</h3>
-        {Object.values(MAP_LAYERS).map((layer) => {
-          const live = LIVE_LAYER_IDS.has(layer.id);
-          return (
-            <label key={layer.id} className={`map-layer-item ${layers[layer.id] ? 'active' : ''}`} style={{ opacity: live ? 1 : 0.45 }} title={live ? undefined : 'No backend data source for this layer yet'}>
-              <input
-                type="checkbox"
-                checked={Boolean(layers[layer.id])}
-                disabled={!live}
-                onChange={() => toggleLayer(layer.id)}
-                style={{ accentColor: layer.color }}
-              />
-              <span className="map-layer-color" style={{ background: layer.color }} />
-              <span>{layer.label}{!live && ' (no backend)'}</span>
-            </label>
-          );
-        })}
+  /* Route screen results, matched to the bergs on the map. Only meaningful
+     when the map shows the route's own departure date. */
+  const proximityById = useMemo(() => {
+    if (!hazards.proximity || routeResult?.depart_date !== selectedDate) return null;
+    return new Map(hazards.proximity.map((p) => [p.bergId, p]));
+  }, [hazards.proximity, routeResult, selectedDate]);
 
-        {/* Observed berg feed, kept separate from the modelled bergs so the
-            distinction between measurement and prediction stays visible. */}
-        <label className={`map-layer-item ${showLiveBergs ? 'active' : ''}`} title="US National Ice Center weekly bulletin">
-          <input
-            type="checkbox"
-            checked={showLiveBergs}
-            onChange={() => setShowLiveBergs((v) => !v)}
-            style={{ accentColor: '#c2410c' }}
-          />
-          <span className="map-layer-color" style={{ background: '#c2410c' }} />
-          <span>Icebergs (NIC observed)</span>
-        </label>
-        {showLiveBergs && liveBergs.isError && (
-          <p style={{ fontSize: '10px', color: 'var(--color-text-tertiary)', margin: 'var(--space-2) 0 0' }}>
-            Live NIC feed unavailable.
-          </p>
-        )}
-      </div>
+  /* ── Endpoints picked on the map ── */
+  const endpointFor = useCallback((place) => ({
+    id: place.id,
+    name: config?.origins?.[place.id]?.name || config?.stations?.[place.id]?.name || place.name,
+    lat: place.lat,
+    lon: place.lon,
+  }), [config]);
 
+  const pickOrigin = useCallback((place) => {
+    const next = endpointFor(place);
+    setOrigin(next);
+    const other = useRouteStore.getState().destination;
+    if (other && other.id !== next.id) plan({ origin: next });
+  }, [endpointFor, setOrigin, plan]);
 
+  const pickDestination = useCallback((place) => {
+    const next = endpointFor(place);
+    setDestination(next);
+    const other = useRouteStore.getState().origin;
+    if (other && other.id !== next.id) plan({ destination: next });
+  }, [endpointFor, setDestination, plan]);
+
+  const routeList = routeResult?.list || [];
+  const successCount = routeList.filter((r) => r.success).length;
+
+  const layerNotes = {
+    oceanCurrents: layers.oceanCurrents && ocean.isError ? 'Unavailable: this backend does not serve GET /ocean.' : null,
+    weather: layers.weather && weather.isError ? 'Unavailable: this backend does not serve GET /weather.' : null,
+    icebergs: bergsQuery.data?.source === 'synthetic'
+      ? 'Synthetic berg positions (demo data), not observations.'
+      : bergsQuery.data?.source === 'observed' ? 'Observed BYU/NIC tracks, drifted by the ensemble model.' : null,
+  };
+
+  /* ── Panels ── */
+  const plannerPanel = (
+    <PanelSection title="Voyage planner" icon={Compass}>
+      <RoutePlanner />
+    </PanelSection>
+  );
+
+  const layersPanel = (
+    <>
+      <PanelSection title="Map & layers" icon={Layers} defaultOpen={!narrow ? false : true}>
+        <MapLayersPanel
+          projection={projection} onProjectionChange={setProjection}
+          basemapId={basemapId} onBasemapChange={setBasemapId}
+          polarBasemapId={polarBasemapId} onPolarBasemapChange={setPolarBasemapId}
+          polarOverlays={polarOverlays}
+          onTogglePolarOverlay={(id) => setPolarOverlays((p) => ({ ...p, [id]: !p[id] }))}
+          seaIceDate={seaIceDate} selectedDate={selectedDate}
+          layers={layers} onToggleLayer={toggleLayer} layerNotes={layerNotes}
+          showLiveBergs={showLiveBergs} onToggleLiveBergs={() => setShowLiveBergs((v) => !v)}
+          liveBergsError={liveBergs.isError}
+        />
+      </PanelSection>
       <MapControls
         leadDay={leadDay} setLeadDay={setLeadDay}
         bergHorizon={bergHorizon} setBergHorizon={setBergHorizon}
@@ -279,10 +321,36 @@ export default function MapPage() {
         validDate={validDate}
         forecastSource={forecast.data?.source}
       />
+    </>
+  );
 
-      </aside>
+  const routesPanel = routeList.length ? (
+    <>
+      <PanelSection title="Route alternatives" icon={RouteIcon} meta={`${successCount}/${routeList.length}`}>
+        <RouteComparison result={routeResult} variant="cards" />
+      </PanelSection>
+      <PanelSection title="Selected route" icon={Navigation}>
+        <RouteMetrics route={selectedRoute} result={routeResult} />
+      </PanelSection>
+      <PanelSection title="Hazards on route" icon={ShieldAlert}>
+        <RouteHazards route={selectedRoute} hazards={hazards} />
+      </PanelSection>
+      <PanelSection title="Route guidance" icon={ListOrdered} meta="indicative">
+        <NavigationGuidance route={selectedRoute} />
+      </PanelSection>
+    </>
+  ) : (
+    <div className="map-panel-section map-panel-empty">
+      <RouteIcon size={20} />
+      <p>
+        No routes yet. Choose an origin and destination in the planner — or use a station or port popup on
+        the map — and calculate. Alternatives, hazards and route guidance appear here.
+      </p>
+    </div>
+  );
 
-      <div className="map-canvas-wrap">
+  const mapCanvas = (
+    <div className="map-canvas-wrap">
       <MapContainer
         key={projection}
         /* Must name EPSG3857 explicitly: Leaflet's setOptions copies an
@@ -294,10 +362,8 @@ export default function MapPage() {
         minZoom={view.minZoom}
         zoomSnap={view.zoomSnap}
         maxZoom={isPolar ? GIBS_MAX_ZOOM['250m'] : (basemap.maxZoom ?? MAP_DEFAULTS.maxZoom)}
-        /* Stop the world repeating sideways forever. Leaflet tiles wrap by
-           default, which in Mercator gave endless copies of Antarctica and
-           made pan feel bottomless. maxBounds pins the view to the southern
-           ocean; the viscosity makes the edge push back rather than snap. */
+        /* Stop the world repeating sideways forever; the viscosity makes the
+           edge push back rather than snap. */
         maxBounds={isPolar ? undefined : MAP_DEFAULTS.maxBounds}
         maxBoundsViscosity={isPolar ? 0 : 0.25}
         worldCopyJump={false}
@@ -327,7 +393,7 @@ export default function MapPage() {
           />
         )}
 
-        <CoordinateChips projection={projection} gridShape={grid?.shape} />
+        <CoordinateChips projection={projection} gridShape={grid?.shape} inspect={inspect} />
 
         {/* Reference geometry: the Antarctic Circle, and the box the model
             actually covers so it's obvious where the data stops. */}
@@ -348,13 +414,10 @@ export default function MapPage() {
           <Tooltip sticky>CryoNav domain · 20°W–120°E, 50°S–78°S</Tooltip>
         </Polyline>
 
-        {/* Bathymetry sits under everything else — it's context, not data
-            you read values off. */}
+        {/* Bathymetry sits under everything else — context, not data. */}
         {layers.bathymetry && grid?.bathy && <BathymetryLayer grid={grid} />}
 
-        {/* Model SIC field: observed, forecast, or the difference between
-            them. Difference is the honest view — it shows where the model
-            is wrong rather than only what it predicted. */}
+        {/* Model SIC field: observed, forecast, or the difference between them. */}
         {sicOn && grid && sicMode === 'difference' && diffField && (
           <SicCanvasLayer sic={diffField} grid={grid} colorFn={diffColor} />
         )}
@@ -365,21 +428,32 @@ export default function MapPage() {
           <SicCanvasLayer sic={observed.data.sic} grid={grid} colorFn={sicColor} />
         )}
 
-        {/* Stations and ports, with their names permanently on the map. */}
+        {/* Stations and ports, named on the map, pickable as route endpoints. */}
         {layers.stations && (
           <PlaceMarkers
             stations={RESEARCH_STATIONS}
             ports={DEPARTURE_PORTS}
             config={config}
-            onOrigin={(p) => setOrigin({ id: p.id, name: p.name, lat: p.lat, lon: p.lon })}
-            onDestination={(p) => setDestination({ id: p.id, name: p.name, lat: p.lat, lon: p.lon })}
+            originId={origin?.id}
+            destinationId={destination?.id}
+            onOrigin={pickOrigin}
+            onDestination={pickDestination}
+            hiddenIds={layers.routes ? [
+              routeResult ? routeLastRequest?.origin : origin?.id,
+              routeResult ? routeLastRequest?.destination : destination?.id,
+            ] : []}
           />
         )}
 
-        {/* Modelled bergs: day-0 positions, and — when trajectories are on —
-            drift tracks, projected endpoints and the ensemble envelope. */}
+        {/* Modelled bergs: day-0 positions, drift tracks, projected endpoints
+            and the ensemble envelope — flagged when near the selected route. */}
         {layers.icebergs && bergs?.length > 0 && (
-          <IcebergLayer bergs={bergs} horizon={bergHorizon} showTracks={Boolean(layers.trajectories)} />
+          <IcebergLayer
+            bergs={bergs}
+            horizon={bergHorizon}
+            showTracks={Boolean(layers.trajectories)}
+            proximity={proximityById}
+          />
         )}
 
         {/* Real CMEMS surface currents and ERA5 wind, as vector fields. */}
@@ -393,27 +467,68 @@ export default function MapPage() {
         {/* Observed NIC positions, deliberately distinct from the modelled ones. */}
         {showLiveBergs && liveBergs.data && <LiveIcebergLayer data={liveBergs.data} />}
 
-        {layers.routes && routePaths.map(({ key, name, path, color }) => (
-          <Polyline key={key} positions={path} pathOptions={{ color, weight: 3 }}>
-            <Tooltip sticky>{name}</Tooltip>
-          </Polyline>
-        ))}
-      </MapContainer>
-      </div>
-
-      {/* Results — route metrics and legend, in their own column. */}
-      <aside className="map-panel map-panel-right">
-        {routePaths.length > 0 && (
-        <div className="map-rail-panel">
-          <h3>Routes</h3>
-          {routeResult.comparison?.table?.filter((r) => r.success).map((r) => (
-            <div key={r.key} style={{ fontSize: 'var(--font-size-xs)', display: 'flex', justifyContent: 'space-between', gap: 'var(--space-3)', padding: '2px 0' }}>
-              <span style={{ color: ROUTE_COLORS[r.key] || '#1668c9' }}>{r.profile}</span>
-              <span className="text-mono">{formatDistance(r.distance_nm)} · {formatDuration(r.time_h)}</span>
-            </div>
-          ))}
-        </div>
+        {/* Route alternatives, the selected route and its indications. */}
+        {layers.routes && (
+          <RouteLayer
+            result={routeResult}
+            exposure={hazards.exposure}
+            planned={{ origin, destination }}
+          />
         )}
+      </MapContainer>
+
+      <SelectedRouteChip
+        route={selectedRoute}
+        hazards={hazards}
+        isCalculating={isCalculating}
+        onOpen={narrow ? () => setTab('routes') : undefined}
+      />
+    </div>
+  );
+
+  if (narrow) {
+    return (
+      <div className="map-workspace is-narrow">
+        <aside className="map-panel map-panel-left" aria-label="Planning, routes and layers">
+          <div className="map-tabs" role="tablist">
+            {TABS.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                aria-selected={tab === t.id}
+                className={`map-tab${tab === t.id ? ' is-active' : ''}`}
+                onClick={() => setTab(t.id)}
+              >
+                {t.label}{t.id === 'routes' && successCount ? ` (${successCount})` : ''}
+              </button>
+            ))}
+          </div>
+          {tab === 'plan' && plannerPanel}
+          {tab === 'routes' && routesPanel}
+          {tab === 'layers' && (
+            <>
+              {layersPanel}
+              <MapLegend />
+            </>
+          )}
+        </aside>
+        {mapCanvas}
+      </div>
+    );
+  }
+
+  return (
+    <div className="map-workspace">
+      <aside className="map-panel map-panel-left" aria-label="Planning and layers">
+        {plannerPanel}
+        {layersPanel}
+      </aside>
+
+      {mapCanvas}
+
+      <aside className="map-panel map-panel-right" aria-label="Routes">
+        {routesPanel}
         <MapLegend />
       </aside>
     </div>

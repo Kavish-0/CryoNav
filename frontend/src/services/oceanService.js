@@ -24,7 +24,8 @@ const oceanService = {
    * }>}
    */
   async getOcean(date, stride = 6) {
-    const { data } = await apiClient.get('/ocean', { params: { date, stride } });
+    // Optional endpoint — the map shows "unavailable" instead of a toast
+    const { data } = await apiClient.get('/ocean', { params: { date, stride }, silent: true });
     return data;
   },
 };

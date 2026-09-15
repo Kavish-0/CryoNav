@@ -1,10 +1,9 @@
 /* ═══════════════════════════════════════════════════════════════
-   MapLegend — what every colour on the map means.
+   MapLegend — what every colour and mark on the map means.
 
-   The bundled web/ client has one and the React map didn't, which left
-   the route colours, drift tracks and ice ramp unexplained. Colours here
-   are read from the same constants the layers draw with, so the legend
-   cannot drift out of step with the map.
+   Route colours, letters and line styles are read from ROUTE_PROFILES and
+   the ice-on-route bands from SIC_ROUTE_BANDS — the same constants the
+   layers draw with — so the legend cannot drift out of step with the map.
 
    Collapsible, because on a small screen a permanent legend costs more
    than it explains.
@@ -12,13 +11,21 @@
 
 import React, { useState } from 'react';
 import { List, ChevronDown } from 'lucide-react';
+import { ROUTE_PROFILES, ROUTE_PROFILE_ORDER, SIC_ROUTE_BANDS } from '@utils/constants';
 
-const ROUTE_KEYS = [
-  { label: 'Balanced (recommended)', color: '#1668c9' },
-  { label: 'Minimum ice', color: '#0f7a53' },
-  { label: 'Minimum time', color: '#c2570b' },
-  { label: 'Great circle', color: '#6d3fd4' },
-  { label: "Today's ice route", color: '#c62828' },
+const ROUTE_KEYS = ROUTE_PROFILE_ORDER.map((key) => ({ key, ...ROUTE_PROFILES[key] }));
+
+const INDICATIONS = [
+  { label: 'Selected route (white casing)', color: '#1668c9', shape: 'casing' },
+  { label: 'Direction of travel', color: '#1668c9', shape: 'chevron' },
+  { label: 'Leg waypoint (numbered)', color: '#1668c9', shape: 'wp' },
+  { label: 'Origin', color: '#0f7a53', shape: 'pin' },
+  { label: 'Destination', color: '#0d1b2a', shape: 'pin' },
+  ...SIC_ROUTE_BANDS.filter((b) => b.drawn).map((b) => ({
+    label: `Ice on route: ${b.label}`, color: b.color, shape: 'line',
+  })),
+  { label: 'Berg near route: danger', color: '#c62828', shape: 'ring-solid' },
+  { label: 'Berg near route: caution', color: '#b45309', shape: 'ring-solid' },
 ];
 
 const FEATURES = [
@@ -42,25 +49,20 @@ const ICE_STOPS = [
 ];
 
 function Swatch({ color, shape }) {
-  if (shape === 'dash') {
-    return <span className="lg-swatch lg-dash" style={{ borderTopColor: color }} />;
+  switch (shape) {
+    case 'dash': return <span className="lg-swatch lg-dash" style={{ borderTopColor: color }} />;
+    case 'ring': return <span className="lg-swatch lg-ring" style={{ borderColor: color }} />;
+    case 'ring-solid': return <span className="lg-swatch lg-ring-solid" style={{ borderColor: color }} />;
+    case 'tri': return <span className="lg-swatch lg-tri" style={{ background: color }} />;
+    case 'berg': return <span className="lg-swatch lg-berg" style={{ background: color }} />;
+    case 'pill': return <span className="lg-swatch lg-pill" style={{ borderColor: color }} />;
+    case 'arrow': return <span className="lg-swatch lg-arrow" style={{ background: color }} />;
+    case 'casing': return <span className="lg-swatch lg-casing" style={{ background: color }} />;
+    case 'chevron': return <span className="lg-swatch lg-chevron" style={{ background: color }} />;
+    case 'wp': return <span className="lg-swatch lg-wp" style={{ borderColor: color }} />;
+    case 'pin': return <span className="lg-swatch lg-pin" style={{ background: color }} />;
+    default: return <span className="lg-swatch lg-line" style={{ background: color }} />;
   }
-  if (shape === 'ring') {
-    return <span className="lg-swatch lg-ring" style={{ borderColor: color }} />;
-  }
-  if (shape === 'tri') {
-    return <span className="lg-swatch lg-tri" style={{ background: color }} />;
-  }
-  if (shape === 'berg') {
-    return <span className="lg-swatch lg-berg" style={{ background: color }} />;
-  }
-  if (shape === 'pill') {
-    return <span className="lg-swatch lg-pill" style={{ borderColor: color }} />;
-  }
-  if (shape === 'arrow') {
-    return <span className="lg-swatch lg-arrow" style={{ background: color }} />;
-  }
-  return <span className="lg-swatch lg-line" style={{ background: color }} />;
 }
 
 export default function MapLegend() {
@@ -76,6 +78,22 @@ export default function MapLegend() {
 
       {open && (
         <div className="lg-body">
+          <div className="lg-group-title">Routes</div>
+          {ROUTE_KEYS.map((r) => (
+            <div key={r.key} className="lg-row">
+              <span className="lg-letter" style={{ background: r.color }}>{r.letter}</span>
+              <Swatch color={r.color} shape={r.dashArray ? 'dash' : 'line'} />
+              <span>{r.label}</span>
+            </div>
+          ))}
+
+          <div className="lg-group-title">Route indications</div>
+          {INDICATIONS.map((f) => (
+            <div key={f.label} className="lg-row">
+              <Swatch color={f.color} shape={f.shape} /> <span>{f.label}</span>
+            </div>
+          ))}
+
           <div className="lg-group-title">Sea ice concentration</div>
           <div className="lg-ramp">
             {ICE_STOPS.map((s) => (
@@ -93,13 +111,6 @@ export default function MapLegend() {
             <span className="lg-swatch lg-line" style={{ background: 'rgba(0,168,255,0.85)' }} />
             <span>over-predicts</span>
           </div>
-
-          <div className="lg-group-title">Routes</div>
-          {ROUTE_KEYS.map((r) => (
-            <div key={r.label} className="lg-row">
-              <Swatch color={r.color} /> <span>{r.label}</span>
-            </div>
-          ))}
 
           <div className="lg-group-title">Features</div>
           {FEATURES.map((f) => (

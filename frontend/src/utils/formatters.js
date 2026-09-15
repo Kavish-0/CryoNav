@@ -164,6 +164,49 @@ export function formatCompactNumber(value) {
   return value.toString();
 }
 
+/* ── Navigation ─────────────────────────────────────────────── */
+
+/**
+ * Nautical miles with thousands separators, e.g. 3049.1 → "3,049 nm"
+ * @param {number} nm
+ * @param {number} [decimals=0]
+ * @returns {string}
+ */
+export function formatNauticalMiles(nm, decimals = 0) {
+  if (nm === null || nm === undefined || Number.isNaN(nm)) return '—';
+  return `${Number(nm).toLocaleString('en-US', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  })} nm`;
+}
+
+/**
+ * Three-digit true bearing, e.g. 42.3 → "042°"
+ * @param {number} degrees
+ * @returns {string}
+ */
+export function formatBearing(degrees) {
+  if (degrees === null || degrees === undefined || Number.isNaN(degrees)) return '—';
+  const d = ((Math.round(degrees) % 360) + 360) % 360;
+  return `${String(d).padStart(3, '0')}°`;
+}
+
+/**
+ * Arrival time in UTC for a voyage departing at 00:00 UTC on `departDate`.
+ * The backend routes by calendar day and has no departure time, so the
+ * midnight assumption is stated wherever this is shown.
+ * @param {string} departDate - YYYY-MM-DD
+ * @param {number} hours - Voyage duration
+ * @returns {string|null} e.g. "2023-01-22 03:00 UTC"
+ */
+export function formatEtaUtc(departDate, hours) {
+  if (!departDate || hours === null || hours === undefined || Number.isNaN(hours)) return null;
+  const t0 = Date.parse(`${departDate}T00:00:00Z`);
+  if (Number.isNaN(t0)) return null;
+  const iso = new Date(t0 + hours * 3600 * 1000).toISOString();
+  return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+}
+
 /* ── Risk ───────────────────────────────────────────────────── */
 
 /**

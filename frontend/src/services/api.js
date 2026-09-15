@@ -44,6 +44,15 @@ apiClient.interceptors.response.use(
     const message = error.response?.data?.detail || error.message || 'Unknown error';
     const url = error.config?.url || 'unknown';
 
+    /* Requests marked `silent` handle their own failure in the UI — optional
+       layers that may not exist on every backend (GET /ocean, /weather,
+       /bergs/live) and calls that show an inline error (POST /route). A
+       toast on top would just be noise. */
+    if (error.config?.silent) {
+      console.warn(`[API] ${status || 'NETWORK'} ${url}: ${message}`);
+      return Promise.reject(error);
+    }
+
     // User-facing error toasts
     if (status === 404) {
       toast.error(`Resource not found: ${url}`);
@@ -63,5 +72,12 @@ apiClient.interceptors.response.use(
     return Promise.reject(error);
   }
 );
+
+/**
+ * React Query retry policy for optional endpoints: a 404 means this backend
+ * simply doesn't serve the route, so don't retry it; retry anything else once.
+ */
+export const retryUnlessMissing = (failureCount, error) =>
+  error?.response?.status !== 404 && failureCount < 1;
 
 export default apiClient;
