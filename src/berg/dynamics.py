@@ -209,9 +209,69 @@ def empirical_2pct_rule(lat, lon, wind_u, wind_v, curr_u, curr_v, dt_hours=1.0):
     return new_lat, new_lon
 
 
+def _propagate_2pct_batch(berg_id, start_lat, start_lon, horizon_days,
+                          forcing_batch, n_ensemble, rng,
+                          n_steps_per_day, total_steps):
+    """
+    Drift every ensemble member together under the 2% rule.
+
+    The scalar loop in propagate() calls forcing_func twice per member per
+    hourly step - 33,600 nearest-cell lookups for one 50-member berg over 14
+    days - which dominated the cost of /bergs and of every /route that builds a
+    berg-risk field. Here each step samples all members in a single call and
+    advances them with array arithmetic.
+
+    The model is unchanged: same 2% rule, same hourly step, same daily
+    sampling, same grounding rule, and member 0 still runs unperturbed. Only
+    the order the perturbations are drawn in differs, so the tracks are
+    statistically equivalent to the scalar loop rather than identical to it.
+
+    forcing_batch(t_day, lats, lons) -> dict of arrays, one entry per member.
+    """
+    lats = np.full(n_ensemble, float(start_lat))
+    lons = np.full(n_ensemble, float(start_lon))
+
+    # (n_ensemble, horizon_days + 1, 2); day 0 is the start position.
+    ensemble = np.zeros((n_ensemble, horizon_days + 1, 2))
+    ensemble[:, 0, 0] = lats
+    ensemble[:, 0, 1] = lons
+
+    for step in range(total_steps):
+        t_day = step * (DT / 3600.0) / 24.0
+        f = forcing_batch(t_day, lats, lons)
+
+        # Member 0 is the unperturbed control, as in the scalar loop.
+        noise = rng.uniform(-0.1, 0.1, size=(4, n_ensemble))
+        noise[:, 0] = 0.0
+        wind_u = f["wind_u"] * (1.0 + noise[0])
+        wind_v = f["wind_v"] * (1.0 + noise[1])
+        curr_u = f["curr_u"] * (1.0 + noise[2])
+        curr_v = f["curr_v"] * (1.0 + noise[3])
+
+        new_lat, new_lon = empirical_2pct_rule(lats, lons, wind_u, wind_v,
+                                               curr_u, curr_v, DT / 3600.0)
+
+        # Halt members that would drift onto land or into the shallows.
+        nf = forcing_batch(t_day, new_lat, new_lon)
+        grounded = (nf["land_mask"] > 0.5) | (nf["bathy"] > -15.0)
+        lats = np.where(grounded, lats, new_lat)
+        lons = np.where(grounded, lons, new_lon)
+
+        if (step + 1) % n_steps_per_day == 0:
+            day = (step + 1) // n_steps_per_day
+            if day < ensemble.shape[1]:
+                ensemble[:, day, 0] = lats
+                ensemble[:, day, 1] = lons
+
+    mean_track = [(d, float(ensemble[:, d, 0].mean()), float(ensemble[:, d, 1].mean()))
+                  for d in range(ensemble.shape[1])]
+    return {"berg_id": berg_id, "mean_track": mean_track, "ensemble": ensemble}
+
+
 def propagate(berg_id, start_lat, start_lon, t0, horizon_days,
               forcing_func, berg_length=None, berg_width=None,
-              method="dynamics", n_ensemble=1, rng=None):
+              method="dynamics", n_ensemble=1, rng=None,
+              forcing_batch=None):
     """
     Propagate an iceberg forward in time.
     
@@ -225,6 +285,9 @@ def propagate(berg_id, start_lat, start_lon, t0, horizon_days,
         method: "dynamics" (full physics) or "2pct" (empirical rule)
         n_ensemble: Number of ensemble members (perturbed forcing)
         rng: numpy random generator for ensemble perturbation
+        forcing_batch: optional callable(t, lats, lons) -> dict of arrays. When
+                       given, a 2%-rule ensemble advances every member at once
+                       instead of one at a time; see _propagate_2pct_batch.
     
     Returns:
         dict with mean_track, ensemble tracks, and risk_field
@@ -234,6 +297,11 @@ def propagate(berg_id, start_lat, start_lon, t0, horizon_days,
     
     n_steps_per_day = int(24 * 3600 / DT)
     total_steps = horizon_days * n_steps_per_day
+
+    if method == "2pct" and forcing_batch is not None and n_ensemble > 1:
+        return _propagate_2pct_batch(berg_id, start_lat, start_lon, horizon_days,
+                                     forcing_batch, n_ensemble, rng,
+                                     n_steps_per_day, total_steps)
     
     all_tracks = []
     

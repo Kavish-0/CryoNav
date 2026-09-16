@@ -41,7 +41,12 @@ cost_weights:
 
 constraints:
   min_depth_m: 15.0           # minimum bathymetry (ship draft + margin)
-  berg_risk_cutoff: 0.3       # probability above which cell is blocked
+  # P(at least one tracked berg in this 25 km cell on this day), from the
+  # drift ensemble. Was 0.3 against a peak-normalised field where every
+  # berg read 1.0 at its centre; on a true probability scale the ocean
+  # maximum is ~0.06, so 0.3 could never be reached and the constraint
+  # was dead. 0.05 blocks the cells a berg is genuinely likely to occupy.
+  berg_risk_cutoff: 0.05      # probability above which cell is blocked
   max_sic_traversal: 0.9      # matches sic_block
 
 search:
