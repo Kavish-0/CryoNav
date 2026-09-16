@@ -118,7 +118,9 @@ export default function IcebergsPage() {
         <div className="card">
           <div className="card-header">
             <div className="card-title"><Navigation size={16} /> Trajectory Prediction</div>
-            <span className="model-tag">RK4 · Physics-Based</span>
+            {/* The API propagates with the empirical 2% rule (main.py passes
+                method="2pct"), not the RK4 momentum balance, so say so. */}
+            <span className="model-tag">2% rule · ensemble drift</span>
           </div>
           {selectedBerg && trajectoryStats ? (
             <div style={{ padding: 'var(--space-4)', display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>

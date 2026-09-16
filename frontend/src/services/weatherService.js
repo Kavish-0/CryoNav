@@ -20,8 +20,11 @@ const weatherService = {
    * }>}
    */
   async getWeather(date, stride = 6) {
-    // Optional endpoint — the map shows "unavailable" instead of a toast
-    const { data } = await apiClient.get('/weather', { params: { date, stride }, silent: true });
+    /* Optional endpoint — the map shows "unavailable" instead of a toast.
+       Same cost profile as /ocean: ~13 s cold, longer behind a queue. */
+    const { data } = await apiClient.get('/weather', {
+      params: { date, stride }, timeout: 120000, silent: true,
+    });
     return data;
   },
 };

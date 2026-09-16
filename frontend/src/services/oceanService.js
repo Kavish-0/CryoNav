@@ -23,9 +23,16 @@ const oceanService = {
    *   stats: {mean_current_ms:number, max_current_ms:number, mean_sst_c:number, mean_ssh_m:number}
    * }>}
    */
-  async getOcean(date, stride = 6) {
-    // Optional endpoint — the map shows "unavailable" instead of a toast
-    const { data } = await apiClient.get('/ocean', { params: { date, stride }, silent: true });
+  async getOcean(date, stride = 6, fields = false) {
+    /* Optional endpoint — the map shows "unavailable" instead of a toast.
+       A cold day measures ~11 s (full CMEMS fields serialised out of the
+       cube) and longer when other heavy requests are queued ahead of it, so
+       the 30 s default is too tight. */
+    /* `fields` pulls the full sst/speed/zos rasters (~3 MB). The map draws
+       arrows only, so it leaves them off; the Ocean page asks for them. */
+    const { data } = await apiClient.get('/ocean', {
+      params: { date, stride, fields }, timeout: 120000, silent: true,
+    });
     return data;
   },
 };

@@ -27,8 +27,12 @@ const icebergService = {
    *                              observed_on, final_position }]
    */
   async getIcebergs(date = '2023-01-13', horizon = 7, limit = 8) {
+    /* Same cost as getIcebergsWithMeta — a 50-member ensemble for an
+       uncached date runs ~12 s, and longer behind other heavy work, so the
+       30 s default timed out on pages that load several fields at once. */
     const { data } = await apiClient.get('/bergs', {
       params: { date, horizon, limit },
+      timeout: 120000,
     });
     return data.bergs;
   },
@@ -39,8 +43,11 @@ const icebergService = {
    * both of which the UI should show rather than hide.
    */
   async getIcebergsWithMeta(date = '2023-01-13', horizon = 7, limit = 8) {
+    /* Propagating a 50-member ensemble takes ~15 s for a date the server has
+       not seen before, and longer when queued behind other heavy work. */
     const { data } = await apiClient.get('/bergs', {
       params: { date, horizon, limit },
+      timeout: 120000,
     });
     return data;
   },

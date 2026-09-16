@@ -15,6 +15,8 @@ export const LIVE_LAYER_IDS = new Set([
   'icebergs', 'trajectories', 'routes', 'stations',
   'seaIce', 'seaIceForecast', 'bathymetry',
   'oceanCurrents', 'weather',
+  // Joined once the backend served the router's own berg-risk field
+  'riskZones',
 ]);
 
 const selectStyle = { width: '100%', marginBottom: 'var(--space-3)', fontSize: 'var(--font-size-xs)' };

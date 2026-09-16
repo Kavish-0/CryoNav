@@ -146,7 +146,7 @@ export default function RoutePlanner() {
         <label className="rp-label" htmlFor="rp-date"><CalendarDays size={11} /> Departure date</label>
         <input
           id="rp-date" type="date" className="rp-input"
-          value={selectedDate} min={range?.start} max={range?.end}
+          value={selectedDate || ''} min={range?.start} max={range?.end}
           onChange={(e) => e.target.value && setSelectedDate(e.target.value)}
         />
         {dates?.demo_dates?.length > 0 && (
@@ -224,7 +224,7 @@ export default function RoutePlanner() {
         <button
           type="button" className="btn btn-primary"
           onClick={() => plan()}
-          disabled={isCalculating || !origin || !destination || sameEndpoints || configLoading}
+          disabled={isCalculating || !origin || !destination || !selectedDate || sameEndpoints || configLoading}
         >
           {isCalculating
             ? <><Loader2 size={14} className="rp-spin" /> Calculating… {elapsed}s</>

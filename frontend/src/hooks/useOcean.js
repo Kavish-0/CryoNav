@@ -11,10 +11,10 @@ import oceanService from '@services/oceanService';
 import weatherService from '@services/weatherService';
 import { retryUnlessMissing } from '@services/api';
 
-export function useOcean(date, stride = 6) {
+export function useOcean(date, stride = 6, fields = false) {
   return useQuery({
-    queryKey: ['ocean', date, stride],
-    queryFn: () => oceanService.getOcean(date, stride),
+    queryKey: ['ocean', date, stride, fields],
+    queryFn: () => oceanService.getOcean(date, stride, fields),
     enabled: Boolean(date),
     staleTime: 10 * 60 * 1000,
     retry: retryUnlessMissing,

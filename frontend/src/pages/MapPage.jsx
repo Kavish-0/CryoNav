@@ -34,6 +34,7 @@ import { useObserved } from '@hooks/useObserved';
 import { useForecast } from '@hooks/useForecast';
 import { useLiveBergs } from '@hooks/useProvenance';
 import { useOcean, useWeather } from '@hooks/useOcean';
+import { useRiskField } from '@hooks/useRiskField';
 import { useConfig } from '@hooks/useConfig';
 import { usePlanRoutes } from '@hooks/useRouteCalculation';
 import { useSelectedRoute } from '@hooks/useSelectedRoute';
@@ -43,6 +44,7 @@ import SicCanvasLayer, { sicColor, diffColor } from '@components/map/SicCanvasLa
 import IcebergLayer from '@components/map/IcebergLayer';
 import BathymetryLayer from '@components/map/BathymetryLayer';
 import LiveIcebergLayer from '@components/map/LiveIcebergLayer';
+import RiskZonesLayer from '@components/map/RiskZonesLayer';
 import MapControls from '@components/map/MapControls';
 import PlaceMarkers from '@components/map/PlaceMarkers';
 import VectorFieldLayer from '@components/map/VectorFieldLayer';
@@ -202,6 +204,11 @@ export default function MapPage() {
   const ocean = useOcean(layers.oceanCurrents ? selectedDate : null, 6);
   const weather = useWeather(layers.weather ? selectedDate : null, 6);
 
+  /* The router's own berg-risk field — the probability POST /route costs
+     against — for the same day of the passage as the forecast lead. */
+  const bergLimit = useRouteStore((s) => s.bergLimit);
+  const riskField = useRiskField(layers.riskZones ? selectedDate : null, leadDay, bergLimit);
+
   const liveBergs = useLiveBergs();
   const { data: config } = useConfig();
 
@@ -286,6 +293,15 @@ export default function MapPage() {
   const layerNotes = {
     oceanCurrents: layers.oceanCurrents && ocean.isError ? 'Unavailable: this backend does not serve GET /ocean.' : null,
     weather: layers.weather && weather.isError ? 'Unavailable: this backend does not serve GET /weather.' : null,
+    riskZones: layers.riskZones
+      ? (riskField.isError
+        ? (riskField.error?.response?.status === 404
+          ? 'Unavailable: this backend does not serve GET /risk-field.'
+          : `Could not load the risk field: ${riskField.error?.response?.data?.detail || riskField.error?.message || 'request failed'}.`)
+        : riskField.data
+          ? `Router's berg-risk field · day +${riskField.data.lead_day} · ${riskField.data.berg_count} bergs (${riskField.data.berg_source})`
+          : 'Propagating berg drift…')
+      : null,
     icebergs: bergsQuery.data?.source === 'synthetic'
       ? 'Synthetic berg positions (demo data), not observations.'
       : bergsQuery.data?.source === 'observed' ? 'Observed BYU/NIC tracks, drifted by the ensemble model.' : null,
@@ -426,6 +442,11 @@ export default function MapPage() {
         )}
         {sicOn && grid && sicMode === 'observed' && observed.data?.sic && (
           <SicCanvasLayer sic={observed.data.sic} grid={grid} colorFn={sicColor} />
+        )}
+
+        {/* The berg-risk field the router actually costed against. */}
+        {layers.riskZones && grid && riskField.data?.risk && (
+          <RiskZonesLayer risk={riskField.data.risk} grid={grid} />
         )}
 
         {/* Stations and ports, named on the map, pickable as route endpoints. */}

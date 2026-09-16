@@ -26,6 +26,7 @@ const INDICATIONS = [
   })),
   { label: 'Berg near route: danger', color: '#c62828', shape: 'ring-solid' },
   { label: 'Berg near route: caution', color: '#b45309', shape: 'ring-solid' },
+  { label: 'Berg risk field (router’s own)', color: '#d97706', shape: 'line' },
 ];
 
 const FEATURES = [

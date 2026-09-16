@@ -53,7 +53,9 @@ export default function TopBar() {
 
   useEffect(() => {
     if (!range || !fallbackDate) return;
-    if (selectedDate < range.start || selectedDate > range.end) {
+    // Also covers the initial empty date: the store starts without one so no
+    // page requests a day before we know which days the cube holds.
+    if (!selectedDate || selectedDate < range.start || selectedDate > range.end) {
       setSelectedDate(fallbackDate);
     }
   }, [range, fallbackDate, selectedDate, setSelectedDate]);
@@ -73,7 +75,7 @@ export default function TopBar() {
           <Calendar size={14} />
           <input
             type="date"
-            value={selectedDate}
+            value={selectedDate || ''}
             min={range?.start}
             max={range?.end}
             onChange={(e) => setSelectedDate(e.target.value)}
