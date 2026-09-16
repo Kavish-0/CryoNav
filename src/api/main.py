@@ -14,6 +14,8 @@ Endpoints:
 import numpy as np
 import xarray as xr
 import json
+import functools
+import threading
 from pathlib import Path
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -153,6 +155,50 @@ def _observed_at(date_str):
     except Exception:
         idx = 0
     return DS["sic"].values[idx], str(np.datetime64(DS.time.values[idx], "D"))
+
+
+"""
+Heavy endpoints run in FastAPI's worker threads (they are sync `def`), which
+keeps the event loop free. But the work is CPU-bound Python, so letting five
+of them run at once just makes each one five times slower — the browser then
+times out while the server is still computing. Cap how many run concurrently:
+light endpoints stay instant, heavy ones queue and finish at full speed.
+"""
+_HEAVY_SLOTS = threading.Semaphore(2)
+
+
+def heavy(fn):
+    """Serialise CPU-bound endpoint work. FastAPI reads the wrapped signature."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _HEAVY_SLOTS:
+            return fn(*args, **kwargs)
+    return wrapper
+
+
+def _vector_field(u_arr, v_arr, lat, lon, land, stride, decimals=4):
+    """
+    Subsampled arrow field for /ocean and /weather.
+
+    This used to walk all 58,080 cells in Python and call float() on each —
+    ~12 s per request. Striding and masking first means only the few thousand
+    cells that actually become arrows are ever touched.
+    """
+    s = max(1, int(stride))
+    us = u_arr[::s, ::s]
+    vs = v_arr[::s, ::s]
+    la = lat[::s, ::s]
+    lo = lon[::s, ::s]
+    keep = ((land[::s, ::s] < 0.5)
+            & np.isfinite(us) & np.isfinite(vs)
+            & ((np.abs(us) >= 1e-4) | (np.abs(vs) >= 1e-4)))
+    speed = np.hypot(us, vs)
+    return [
+        {"lat": round(float(a), 4), "lon": round(float(b), 4),
+         "u": round(float(c), decimals), "v": round(float(d), decimals),
+         "speed": round(float(e), decimals)}
+        for a, b, c, d, e in zip(la[keep], lo[keep], us[keep], vs[keep], speed[keep])
+    ]
 
 
 def _date_index(date_str, what="date"):
@@ -420,7 +466,9 @@ def get_observed(date: str):
 
 
 @app.get("/ocean")
-def get_ocean(date: str, stride: int = Query(4, ge=1, le=32)):
+@heavy
+def get_ocean(date: str, stride: int = Query(4, ge=1, le=32),
+              fields: bool = False):
     """
     CMEMS GLORYS ocean state: surface currents, temperature and sea level.
 
@@ -436,6 +484,14 @@ def get_ocean(date: str, stride: int = Query(4, ge=1, le=32)):
         raise HTTPException(404, "Data not loaded")
 
     idx = _date_index(date)      # outside the try: a 400 must not become a 500
+    s = max(1, int(stride))
+
+    # Memoised like berg drift: the map re-requests the same day whenever a
+    # layer is toggled, and this response is otherwise rebuilt from scratch.
+    key = ("ocean", idx, s, bool(fields))
+    if key in CACHE:
+        return CACHE[key]
+
     try:
         actual = str(np.datetime64(DS.time.values[idx], "D"))
 
@@ -449,27 +505,7 @@ def get_ocean(date: str, stride: int = Query(4, ge=1, le=32)):
 
         speed = np.sqrt(uo ** 2 + vo ** 2)
 
-        # Subsampled vector field for arrow rendering
-        lat = DS["lat"].values
-        lon = DS["lon"].values
-        s = max(1, int(stride))
-        vectors = []
-        for r in range(0, uo.shape[0], s):
-            for c in range(0, uo.shape[1], s):
-                if land[r, c] >= 0.5:
-                    continue
-                u = float(uo[r, c]); v = float(vo[r, c])
-                if not np.isfinite(u) or not np.isfinite(v):
-                    continue
-                if abs(u) < 1e-4 and abs(v) < 1e-4:
-                    continue
-                vectors.append({
-                    "lat": round(float(lat[r, c]), 4),
-                    "lon": round(float(lon[r, c]), 4),
-                    "u": round(u, 4),
-                    "v": round(v, 4),
-                    "speed": round(float(np.hypot(u, v)), 4),
-                })
+        vectors = _vector_field(uo, vo, DS["lat"].values, DS["lon"].values, land, s)
 
         def _mean(a):
             vals = a[ocean]
@@ -478,16 +514,13 @@ def get_ocean(date: str, stride: int = Query(4, ge=1, le=32)):
 
         is_real = bool(DS["ocean_is_real"].values[idx]) if "ocean_is_real" in DS else None
 
-        return {
+        payload = {
             "date": actual,
             "requested": date,
             "source": "CMEMS GLORYS12 reanalysis" if is_real else "gap-filled",
             "is_real": is_real,
             "stride": s,
             "vectors": vectors,
-            "sst": np.nan_to_num(sst, nan=0.0).round(3).tolist(),
-            "speed": np.nan_to_num(speed, nan=0.0).round(4).tolist(),
-            "zos": np.nan_to_num(zos, nan=0.0).round(4).tolist(),
             "shape": list(uo.shape),
             "stats": {
                 "mean_current_ms": _mean(speed),
@@ -497,12 +530,24 @@ def get_ocean(date: str, stride: int = Query(4, ge=1, le=32)):
                 "mean_ssh_m": _mean(zos),
             },
         }
+
+        # The full rasters are ~3 MB and only the Ocean page draws them; the
+        # map needs arrows and stats, so they are opt-in via ?fields=true.
+        if fields:
+            payload["sst"] = np.nan_to_num(sst, nan=0.0).round(3).tolist()
+            payload["speed"] = np.nan_to_num(speed, nan=0.0).round(4).tolist()
+            payload["zos"] = np.nan_to_num(zos, nan=0.0).round(4).tolist()
+
+        CACHE[key] = payload
+        return payload
     except Exception as e:
         raise HTTPException(500, str(e))
 
 
 @app.get("/weather")
-def get_weather(date: str, stride: int = Query(4, ge=1, le=32)):
+@heavy
+def get_weather(date: str, stride: int = Query(4, ge=1, le=32),
+                fields: bool = False):
     """
     ERA5 atmospheric state: 10 m wind, 2 m temperature, mean sea-level
     pressure. Same shape of response as /ocean so the frontend can treat
@@ -512,6 +557,14 @@ def get_weather(date: str, stride: int = Query(4, ge=1, le=32)):
         raise HTTPException(404, "Data not loaded")
 
     idx = _date_index(date)      # outside the try: a 400 must not become a 500
+    s = max(1, int(stride))
+
+    # `fields` belongs in the key: without it a cached trimmed payload was
+    # returned for a ?fields=true request, silently dropping the raster.
+    key = ("weather", idx, s, bool(fields))
+    if key in CACHE:
+        return CACHE[key]
+
     try:
         actual = str(np.datetime64(DS.time.values[idx], "D"))
 
@@ -526,22 +579,7 @@ def get_weather(date: str, stride: int = Query(4, ge=1, le=32)):
         t2m = DS["t2m"].values[idx]
         msl = DS["msl"].values[idx]
 
-        s = max(1, int(stride))
-        vectors = []
-        for r in range(0, u10.shape[0], s):
-            for c in range(0, u10.shape[1], s):
-                if land[r, c] >= 0.5:
-                    continue
-                u = float(u10[r, c]); v = float(v10[r, c])
-                if not np.isfinite(u) or not np.isfinite(v):
-                    continue
-                vectors.append({
-                    "lat": round(float(lat[r, c]), 4),
-                    "lon": round(float(lon[r, c]), 4),
-                    "u": round(u, 3),
-                    "v": round(v, 3),
-                    "speed": round(float(np.hypot(u, v)), 3),
-                })
+        vectors = _vector_field(u10, v10, lat, lon, land, s, decimals=3)
 
         def _mean(a):
             vals = a[ocean]
@@ -551,14 +589,13 @@ def get_weather(date: str, stride: int = Query(4, ge=1, le=32)):
         is_real = bool(DS["atmo_is_real"].values[idx]) if "atmo_is_real" in DS else None
         t_mean = _mean(t2m)
 
-        return {
+        payload = {
             "date": actual,
             "requested": date,
             "source": "ERA5 reanalysis" if is_real else "gap-filled",
             "is_real": is_real,
             "stride": s,
             "vectors": vectors,
-            "wind_speed": np.nan_to_num(wind, nan=0.0).round(3).tolist(),
             "shape": list(u10.shape),
             "stats": {
                 "mean_wind_ms": _mean(wind),
@@ -568,6 +605,14 @@ def get_weather(date: str, stride: int = Query(4, ge=1, le=32)):
                 "mean_msl_hpa": (lambda m: m / 100.0 if m is not None and m > 10000 else m)(_mean(msl)),
             },
         }
+
+        # ~1.1 MB of wind field that only a raster view would draw; the map
+        # takes arrows and stats, so it is opt-in via ?fields=true.
+        if fields:
+            payload["wind_speed"] = np.nan_to_num(wind, nan=0.0).round(3).tolist()
+
+        CACHE[key] = payload
+        return payload
     except Exception as e:
         raise HTTPException(500, str(e))
 
@@ -698,6 +743,7 @@ def _propagate_bergs(date: str, horizon: int, limit: int):
 
 
 @app.get("/bergs")
+@heavy
 def get_bergs(date: str = "2023-01-13",
               horizon: int = Query(7, ge=1, le=90),
               limit: int = Query(8, ge=1, le=50)):
@@ -750,6 +796,7 @@ class RouteRequest(BaseModel):
 
 
 @app.post("/route")
+@heavy
 def compute_route(req: RouteRequest):
     """
     Compute routes with all alternatives, metrics, and rejection reasons.
@@ -953,6 +1000,7 @@ def compute_route(req: RouteRequest):
 
 
 @app.get("/risk-field")
+@heavy
 def get_risk_field(date: str = "2023-01-13",
                    lead: int = Query(1, ge=1, le=90),
                    limit: int = Query(8, ge=1, le=50)):
