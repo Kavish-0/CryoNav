@@ -178,20 +178,16 @@ def rk4_step(berg, dt, wind_u, wind_v, curr_u, curr_v, sic,
     berg.vx = vx0 + (dt / 6.0) * (k1_vx + 2*k2_vx + 2*k3_vx + k4_vx)
     berg.vy = vy0 + (dt / 6.0) * (k1_vy + 2*k2_vy + 2*k3_vy + k4_vy)
     
-    # Update position
-    dx = (dt / 6.0) * (k1_x + 2*k2_x + 2*k3_x + k4_x) * dt
-    dy = (dt / 6.0) * (k1_y + 2*k2_y + 2*k3_y + k4_y) * dt
-    
-    # Simpler: use mean velocity for position update
-    mean_vx = (vx0 + berg.vx) / 2.0
-    mean_vy = (vy0 + berg.vy) / 2.0
-    
-    dx_m = mean_vx * dt
-    dy_m = mean_vy * dt
-    
+    # Update position from the same RK4 stages.
+    # k*_x / k*_y are velocities, so the weighted sum times dt/6 is already a
+    # displacement in metres. This previously multiplied by dt a second time,
+    # then threw the result away and stepped with the mean velocity instead,
+    # and finally overwrote the converted position with a second, redundant
+    # conversion — three bugs in five lines, none of them reachable as RK4.
+    dx_m = (dt / 6.0) * (k1_x + 2*k2_x + 2*k3_x + k4_x)
+    dy_m = (dt / 6.0) * (k1_y + 2*k2_y + 2*k3_y + k4_y)
+
     berg.lat, berg.lon = _xy_to_lat_lon(dx_m, dy_m, lat0, lon0)
-    berg.lat = lat0 + dy_m / 111320.0
-    berg.lon = lon0 + dx_m / (111320.0 * np.cos(np.radians(lat0)))
 
 
 def empirical_2pct_rule(lat, lon, wind_u, wind_v, curr_u, curr_v, dt_hours=1.0):

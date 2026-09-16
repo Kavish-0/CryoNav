@@ -19,7 +19,7 @@ from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 import sys
 
@@ -117,9 +117,16 @@ async def startup():
                 )
             raw_b = load_canonical_bathymetry_grid()
             real_bathy = np.nan_to_num(raw_b, nan=0.0).tolist()
+            bathy_source = "GEBCO / IBCSO v2 (DOI: 10.1594/PANGAEA.937574)"
+            bathy_note = None
         except Exception as e:
-            print(f"Note: using cube bathymetry instead of IBCSO ({type(e).__name__}).")
+            # Report the substitution: the cache used to claim IBCSO whatever
+            # it actually held, so a failed import silently relabelled the
+            # cube's own bathymetry as the surveyed dataset.
+            bathy_note = f"{type(e).__name__}: {e}"
+            print(f"Note: using cube bathymetry instead of IBCSO ({bathy_note}).")
             real_bathy = np.nan_to_num(DS["bathy"].values, nan=0.0).tolist() if "bathy" in DS else None
+            bathy_source = "data cube bathymetry (IBCSO unavailable)"
 
         GRID_CACHE = {
             "shape": list(DS["lat"].values.shape),
@@ -128,7 +135,8 @@ async def startup():
             "land_mask": DS["land_mask"].values.tolist(),
             "bathy": real_bathy,
             "cell_size_km": 25,
-            "bathymetry_source": "GEBCO / IBCSO v2 (DOI: 10.1594/PANGAEA.937574)",
+            "bathymetry_source": bathy_source,
+            "bathymetry_warning": bathy_note,
         }
 
 
@@ -145,6 +153,32 @@ def _observed_at(date_str):
     except Exception:
         idx = 0
     return DS["sic"].values[idx], str(np.datetime64(DS.time.values[idx], "D"))
+
+
+def _date_index(date_str, what="date"):
+    """
+    Index of `date_str` in the cube, or HTTP 400 if it lies outside it.
+
+    Every field endpoint used to take the nearest timestep silently, so a
+    request for 2030-01-01 returned 2024-12-31's ice — plausible-looking data
+    for a date the record does not cover. Callers must invoke this OUTSIDE
+    their own try/except, or a 400 gets re-raised as a 500.
+    """
+    if DS is None:
+        raise HTTPException(404, "Data not loaded")
+    try:
+        target = np.datetime64(date_str)
+    except Exception:
+        raise HTTPException(400, f"Invalid {what}: {date_str!r}. Use YYYY-MM-DD.")
+
+    times = DS.time.values
+    if not (times[0] <= target <= times[-1]):
+        raise HTTPException(
+            400,
+            f"{what} {date_str} is outside the data cube "
+            f"({np.datetime64(times[0], 'D')} to {np.datetime64(times[-1], 'D')}).",
+        )
+    return int(np.argmin(np.abs(times - target)))
 
 
 def _field_stats(field, ocean):
@@ -193,12 +227,17 @@ async def favicon():
 
 
 @app.get("/grid")
-async def get_grid():
+def get_grid():
     """
     Static grid geometry: lat, lon, land mask, and real GEBCO bathymetry.
 
     These never change, so they are served here once instead of being repeated
     in every /forecast response (which the lead-day animation calls 14 times).
+
+    NOTE: every endpoint that reads the cube, drifts bergs or routes is a plain
+    `def`, not `async def`. FastAPI runs sync endpoints in a worker thread, so a
+    minute-long A* search no longer blocks the event loop — and with it every
+    other request, including the frontend's health check.
     """
     global GRID_CACHE
     if GRID_CACHE is not None:
@@ -207,13 +246,20 @@ async def get_grid():
     if DS is None:
         raise HTTPException(404, "Data not loaded")
 
-    # Load real GEBCO/IBCSO v2 bathymetry
+    # Load real GEBCO/IBCSO v2 bathymetry. If that fails the cube's own
+    # bathymetry stands in — but the response says so, because callers were
+    # otherwise told "IBCSO v2" over a different dataset entirely.
     try:
         from src.data.sources.bathymetry import load_canonical_bathymetry_grid
         raw_b = load_canonical_bathymetry_grid()
         real_bathy = np.nan_to_num(raw_b, nan=0.0).tolist()
-    except Exception:
+        bathy_source = "GEBCO / IBCSO v2 (DOI: 10.1594/PANGAEA.937574)"
+        bathy_note = None
+    except Exception as e:
         real_bathy = np.nan_to_num(DS["bathy"].values, nan=0.0).tolist() if "bathy" in DS else None
+        bathy_source = "data cube bathymetry (IBCSO unavailable)"
+        bathy_note = f"{type(e).__name__}: {e}"
+        print(f"  /grid: falling back to cube bathymetry ({bathy_note})")
 
     GRID_CACHE = {
         "shape": list(DS["lat"].values.shape),
@@ -222,13 +268,14 @@ async def get_grid():
         "land_mask": DS["land_mask"].values.tolist(),
         "bathy": real_bathy,
         "cell_size_km": 25,
-        "bathymetry_source": "GEBCO / IBCSO v2 (DOI: 10.1594/PANGAEA.937574)",
+        "bathymetry_source": bathy_source,
+        "bathymetry_warning": bathy_note,
     }
     return GRID_CACHE
 
 
 @app.get("/data/provenance")
-async def get_data_provenance():
+def get_data_provenance():
     """Return cryptographic SHA-256 provenance metadata for all 6 data sources."""
     if not DATA_PROVENANCE["is_real"]:
         # Refuse rather than render "SHA-256 VERIFIED" over generated fields.
@@ -257,7 +304,7 @@ async def get_data_provenance():
 
 
 @app.get("/data/coverage")
-async def get_data_coverage():
+def get_data_coverage():
     """Return the complete coverage and gap report markdown."""
     from src.data.report_coverage import generate_coverage_report
     report_text = generate_coverage_report()
@@ -265,7 +312,7 @@ async def get_data_coverage():
 
 
 @app.get("/bergs/live")
-async def get_live_icebergs():
+def get_live_icebergs():
     """Return active US National Ice Center weekly tracked icebergs."""
     import pandas as pd
     nic_path = PROJECT_ROOT / "data" / "raw" / "bergs" / "nic" / "nic_antarctic_icebergs.csv"
@@ -285,7 +332,7 @@ async def get_live_icebergs():
 
 
 @app.get("/forecast")
-async def get_forecast(date: str, lead: int = 7):
+def get_forecast(date: str, lead: int = Query(7, ge=1, le=14)):
     """
     Model forecast initialized on `date`, valid at `date + lead` days.
 
@@ -307,6 +354,7 @@ async def get_forecast(date: str, lead: int = 7):
     if not 1 <= lead <= horizon:
         raise HTTPException(400, f"lead must be in 1..{horizon}, got {lead}")
 
+    _date_index(date, "init date")          # 400 rather than a nearest-day guess
     init_dt = np.datetime64(date)
     valid_dt = init_dt + np.timedelta64(lead, "D")
     if not (DS.time.values[0] <= valid_dt <= DS.time.values[-1]):
@@ -343,15 +391,13 @@ async def get_forecast(date: str, lead: int = 7):
 
 
 @app.get("/observed")
-async def get_observed(date: str):
+def get_observed(date: str):
     """Get observed (actual) SIC field for overlay proof."""
     if DS is None:
         raise HTTPException(404, "Data not loaded")
-    
+
+    idx = _date_index(date)      # outside the try: a 400 must not become a 500
     try:
-        target_dt = np.datetime64(date)
-        idx = int(np.argmin(np.abs(DS.time.values - target_dt)))
-        
         sic = DS["sic"].values[idx]
         land_mask = DS["land_mask"].values
         
@@ -374,7 +420,7 @@ async def get_observed(date: str):
 
 
 @app.get("/ocean")
-async def get_ocean(date: str, stride: int = 4):
+def get_ocean(date: str, stride: int = Query(4, ge=1, le=32)):
     """
     CMEMS GLORYS ocean state: surface currents, temperature and sea level.
 
@@ -389,9 +435,8 @@ async def get_ocean(date: str, stride: int = 4):
     if DS is None:
         raise HTTPException(404, "Data not loaded")
 
+    idx = _date_index(date)      # outside the try: a 400 must not become a 500
     try:
-        target_dt = np.datetime64(date)
-        idx = int(np.argmin(np.abs(DS.time.values - target_dt)))
         actual = str(np.datetime64(DS.time.values[idx], "D"))
 
         land = DS["land_mask"].values
@@ -457,7 +502,7 @@ async def get_ocean(date: str, stride: int = 4):
 
 
 @app.get("/weather")
-async def get_weather(date: str, stride: int = 4):
+def get_weather(date: str, stride: int = Query(4, ge=1, le=32)):
     """
     ERA5 atmospheric state: 10 m wind, 2 m temperature, mean sea-level
     pressure. Same shape of response as /ocean so the frontend can treat
@@ -466,9 +511,8 @@ async def get_weather(date: str, stride: int = 4):
     if DS is None:
         raise HTTPException(404, "Data not loaded")
 
+    idx = _date_index(date)      # outside the try: a 400 must not become a 500
     try:
-        target_dt = np.datetime64(date)
-        idx = int(np.argmin(np.abs(DS.time.values - target_dt)))
         actual = str(np.datetime64(DS.time.values[idx], "D"))
 
         land = DS["land_mask"].values
@@ -654,18 +698,22 @@ def _propagate_bergs(date: str, horizon: int, limit: int):
 
 
 @app.get("/bergs")
-async def get_bergs(date: str = "2023-01-13", horizon: int = 7, limit: int = 8):
+def get_bergs(date: str = "2023-01-13",
+              horizon: int = Query(7, ge=1, le=90),
+              limit: int = Query(8, ge=1, le=50)):
     """
     Iceberg drift forecasts from `date`, with ensemble spread.
 
     Positions come from the tracked-iceberg record and are drifted with winds,
     currents and SIC read from the data cube.
+
+    `limit` is bounded above: it used to slice the berg list directly, so a
+    negative value returned every berg but the last few.
     """
     if DS is None:
         raise HTTPException(404, "Data not loaded")
 
-    # Allow extended multi-month drift simulations up to 90 days
-    horizon = max(1, min(horizon, 90))
+    _date_index(date)
     results, source, n_ensemble = _propagate_bergs(date, horizon, limit)
 
     return {
@@ -693,14 +741,16 @@ class RouteRequest(BaseModel):
     origin: str = "cape_town"
     destination: str = "bharati"
     depart_date: str = "2023-01-13"
-    w_time: float = 1.0
-    w_fuel: float = 0.5
-    w_risk: float = 2.0
-    berg_limit: int = 8
+    # Weights are applied to the "balanced" profile; bounded so a stray value
+    # cannot produce a cost field the A* heuristic can no longer admit.
+    w_time: float = Field(1.0, ge=0.0, le=20.0)
+    w_fuel: float = Field(0.5, ge=0.0, le=20.0)
+    w_risk: float = Field(2.0, ge=0.0, le=20.0)
+    berg_limit: int = Field(8, ge=0, le=50)
 
 
 @app.post("/route")
-async def compute_route(req: RouteRequest):
+def compute_route(req: RouteRequest):
     """
     Compute routes with all alternatives, metrics, and rejection reasons.
     """
@@ -736,11 +786,8 @@ async def compute_route(req: RouteRequest):
         dist[~navigable] = np.inf
         return tuple(int(x) for x in np.unravel_index(np.argmin(dist), dist.shape))
     
-    try:
-        depart_dt = np.datetime64(req.depart_date, "ns")
-        today_idx = int(np.argmin(np.abs(DS.time.values - depart_dt)))
-    except Exception:
-        raise HTTPException(400, f"Invalid departure date: {req.depart_date}. Please use YYYY-MM-DD.")
+    today_idx = _date_index(req.depart_date, "departure date")
+    depart_dt = np.datetime64(req.depart_date, "ns")
     sic_today = DS["sic"].values[today_idx]
     
     bathy = DS["bathy"].values
@@ -905,8 +952,47 @@ async def compute_route(req: RouteRequest):
     }
 
 
+@app.get("/risk-field")
+def get_risk_field(date: str = "2023-01-13",
+                   lead: int = Query(1, ge=1, le=90),
+                   limit: int = Query(8, ge=1, le=50)):
+    """
+    Iceberg-risk field the router consumes: probability of berg presence per
+    grid cell on day `lead` of the passage.
+
+    Built from the same ensemble drift /bergs serves (KDE over the members,
+    normalised to [0, 1]), so the map can draw the risk the router actually
+    used instead of re-deriving something similar in the browser.
+
+    Pair with GET /grid for the lat/lon of each cell.
+    """
+    if DS is None:
+        raise HTTPException(404, "Data not loaded")
+
+    _date_index(date)
+    from src.berg.risk_field import compute_risk_field
+
+    results, source, n_ensemble = _propagate_bergs(date, lead, limit)
+    field = compute_risk_field(results, DS["lat"].values, DS["lon"].values,
+                               horizon_days=lead)[lead - 1]
+
+    return {
+        "risk": np.round(field, 4).tolist(),
+        "shape": list(field.shape),
+        "date": date,
+        "lead_day": lead,
+        "berg_count": len(results),
+        "berg_source": source,
+        "n_ensemble": n_ensemble,
+        "stats": {
+            "max_risk": float(field.max()),
+            "cells_above_0_1": int((field > 0.1).sum()),
+        },
+    }
+
+
 @app.get("/metrics")
-async def get_metrics():
+def get_metrics():
     """Return validated rolling-origin backtest metrics (baselines, model skill)."""
     results_dir = PROJECT_ROOT / "results"
     
@@ -972,7 +1058,7 @@ async def get_metrics():
 
 
 @app.get("/metrics/plot")
-async def get_metrics_plot():
+def get_metrics_plot():
     """Serve the publication-grade skill curve visualization."""
     plot_path = PROJECT_ROOT / "results" / "skill_curves.png"
     if not plot_path.exists():

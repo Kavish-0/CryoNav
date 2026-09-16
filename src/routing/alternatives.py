@@ -34,20 +34,23 @@ def generate_alternatives(sic_fields, berg_risk_field, bathy, land_mask,
     """
     profiles = ROUTING["alternatives"]["profiles"]
     routes = {}
-    
-    for name, profile in profiles.items():
-        print(f"  Computing route: {profile['name']}...")
 
+    # The profiles are independent searches over the same read-only fields, so
+    # they run concurrently. A* releases the GIL inside numpy, so this is a real
+    # wall-clock win on the five-profile request the UI makes.
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _compute_single_profile(name, profile):
         weights = dict(profile)
         if weight_overrides and name in weight_overrides:
             weights.update(weight_overrides[name])
-        
+
         # Use persistence SIC (today's field repeated) for the persistence_route
         if profile.get("use_persistence") and sic_today is not None:
             fields = np.stack([sic_today] * sic_fields.shape[0], axis=0)
         else:
             fields = sic_fields
-        
+
         route = astar_route(
             sic_fields=fields,
             berg_risk_field=berg_risk_field,
@@ -61,16 +64,23 @@ def generate_alternatives(sic_fields, berg_risk_field, bathy, land_mask,
             cell_size_km=cell_size_km,
             ignore_ice=profile.get("ignore_ice", False),
         )
-        
+
         route["profile_name"] = profile["name"]
         route["profile_key"] = name
-        
+
         # Smooth the path
         if route["success"] and route["path_latlon"]:
             route["path_latlon_smooth"] = smooth_path(route["path_latlon"])
-        
-        routes[name] = route
-    
+
+        return name, route
+
+    with ThreadPoolExecutor(max_workers=min(len(profiles), 8)) as executor:
+        futures = [executor.submit(_compute_single_profile, name, profile)
+                   for name, profile in profiles.items()]
+        for f in futures:
+            name, route = f.result()
+            routes[name] = route
+
     # Build comparison table
     comparison = build_comparison_table(routes)
     

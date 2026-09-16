@@ -13,6 +13,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from src.config import DOMAIN
 
 
+from scipy.spatial import cKDTree
+
+_GRID_KDTREE_CACHE = {}
+
+def _get_kdtree(lat_grid, lon_grid):
+    shape = lat_grid.shape
+    key = (shape, float(lat_grid[0, 0]), float(lon_grid[0, 0]))
+    if key not in _GRID_KDTREE_CACHE:
+        coords = np.column_stack([lat_grid.ravel(), lon_grid.ravel()])
+        _GRID_KDTREE_CACHE[key] = (cKDTree(coords), shape)
+    return _GRID_KDTREE_CACHE[key]
+
+
 def compute_risk_field(ensemble_tracks, lat_grid, lon_grid, 
                        horizon_days=14, sigma_km=50.0):
     """
@@ -33,36 +46,38 @@ def compute_risk_field(ensemble_tracks, lat_grid, lon_grid,
     sigma_cells = sigma_km / cell_size_km
     
     risk = np.zeros((horizon_days, ny, nx), dtype=np.float32)
+    if not ensemble_tracks:
+        return risk
+
+    tree, shape = _get_kdtree(lat_grid, lon_grid)
     
     for berg_result in ensemble_tracks:
         ensemble = berg_result["ensemble"]  # (n_ens, n_days+1, 2)
         n_ens = ensemble.shape[0]
+        max_days = min(horizon_days, ensemble.shape[1] - 1)
         
-        for day in range(min(horizon_days, ensemble.shape[1] - 1)):
+        for day in range(max_days):
             day_field = np.zeros((ny, nx), dtype=np.float32)
+            pts = ensemble[:, day + 1, :2]  # (n_ens, 2)
             
-            for e in range(n_ens):
-                blat = ensemble[e, day + 1, 0]
-                blon = ensemble[e, day + 1, 1]
-                
-                # Find nearest grid cell
-                dist = (lat_grid - blat)**2 + (lon_grid - blon)**2
-                yi, xi = np.unravel_index(np.argmin(dist), dist.shape)
-                
-                if 0 <= yi < ny and 0 <= xi < nx:
-                    day_field[yi, xi] += 1.0
+            _, flat_indices = tree.query(pts)
+            yis, xis = np.unravel_index(flat_indices, (ny, nx))
+            np.add.at(day_field, (yis, xis), 1.0)
             
             # Apply Gaussian KDE smoothing
             if day_field.sum() > 0:
                 day_field = gaussian_filter(day_field, sigma=sigma_cells)
-                day_field /= day_field.max()  # normalize to [0, 1]
+                m = day_field.max()
+                if m > 0:
+                    day_field /= m
             
             risk[day] += day_field
     
     # Normalize across all bergs
     for day in range(horizon_days):
-        if risk[day].max() > 0:
-            risk[day] /= risk[day].max()
+        m = risk[day].max()
+        if m > 0:
+            risk[day] /= m
     
     return risk
 
