@@ -95,7 +95,8 @@ def build_comparison_table(routes: dict) -> list:
     Build the route comparison table with all metrics.
     
     For each route: distance (nm), transit time (h), hours in SIC > 0.3,
-    hours in SIC > 0.7, estimated fuel (t), max berg risk along track.
+    hours in SIC > 0.7, estimated fuel (t), max berg risk along track, and the
+    closest approach to a tracked berg.
     """
     table = []
     
@@ -110,6 +111,10 @@ def build_comparison_table(routes: dict) -> list:
             "ice_hours_07": round(route.get("ice_hours_07", 0), 1),
             "fuel_t": round(route.get("fuel_t", 0), 1),
             "max_berg_risk": round(route.get("max_berg_risk", 0), 3),
+            # Closest the plotted route passes to a tracked berg's projected
+            # position. Set by the API once the full path is assembled, so it
+            # is absent when this table is built from raw router output.
+            "min_berg_distance_nm": route.get("min_berg_distance_nm"),
             "n_cells": route.get("n_cells", 0),
         }
         table.append(row)
@@ -228,6 +233,7 @@ def format_comparison_for_display(comparison, rejections):
             {"key": "ice_hours_07", "label": "SIC>70% (h)", "align": "right"},
             {"key": "fuel_t", "label": "Fuel (t)", "align": "right"},
             {"key": "max_berg_risk", "label": "Max Berg Risk", "align": "right"},
+            {"key": "min_berg_distance_nm", "label": "Berg clearance (nm)", "align": "right"},
         ],
     }
     return display

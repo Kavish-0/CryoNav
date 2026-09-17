@@ -94,11 +94,18 @@ def fetch_gebco_ibcso_bathymetry(
     return target_path
 
 
-def load_canonical_bathymetry_grid() -> np.ndarray:
+def load_canonical_bathymetry_grid(lats=None, lons=None) -> np.ndarray:
     """
-    Load the GEBCO/IBCSO v2 bathymetry and sample it onto the CANONICAL_DOMAIN EPSG:3031 25 km grid.
+    Load the GEBCO/IBCSO v2 bathymetry and sample it onto a lat/lon grid.
+
+    Defaults to the CANONICAL_DOMAIN EPSG:3031 25 km grid (269, 269). Pass
+    `lats`/`lons` to sample onto a different grid instead - the data cube's
+    grid is (264, 220), and serving cube-shaped lat/lon alongside a
+    canonical-shaped bathymetry array left callers indexing two grids that do
+    not correspond.
+
     Returns:
-        bathy_25km: np.ndarray of shape (269, 269) containing water depth / bed elevation in meters.
+        bathy: np.ndarray shaped like `lats`, water depth / bed elevation in metres.
     """
     import rasterio
     from scipy.ndimage import map_coordinates
@@ -109,7 +116,9 @@ def load_canonical_bathymetry_grid() -> np.ndarray:
 
     verify_provenance_integrity(bathy_file)
 
-    lats, lons = CANONICAL_DOMAIN.get_latlon_grids()
+    if lats is None or lons is None:
+        lats, lons = CANONICAL_DOMAIN.get_latlon_grids()
+    lats, lons = np.asarray(lats), np.asarray(lons)
 
     with rasterio.open(bathy_file) as src:
         # Convert (lon, lat) to raster row/col indices (rowcol returns rows, cols)
@@ -135,7 +144,7 @@ def load_canonical_bathymetry_grid() -> np.ndarray:
             raw_vals[raw_vals == src.nodata] = np.nan
 
         sampled[valid] = raw_vals
-        bathy_grid = sampled.reshape(CANONICAL_DOMAIN.shape)
+        bathy_grid = sampled.reshape(lats.shape)
 
     return bathy_grid
 
