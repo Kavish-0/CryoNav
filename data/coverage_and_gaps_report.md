@@ -1,6 +1,6 @@
 # CryoNav — Data Layer Coverage & Observational Gap Report
 
-**Generated**: 2026-09-16 07:41:04 UTC  
+**Generated**: 2026-09-17 21:04:14 UTC  
 **Domain**: Southern Ocean ($60^\circ\text{S}–78^\circ\text{S}$, Full Longitude $0^\circ–360^\circ$)  
 **Projection**: EPSG:3031 (Antarctic Polar Stereographic, 25 km grid spacing)  
 **Total Canonical Domain Cells**: 72361 (269x269)  
